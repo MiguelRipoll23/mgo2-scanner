@@ -1,0 +1,18 @@
+FROM node:lts-alpine
+
+WORKDIR /app
+
+COPY package*.json ./
+RUN npm ci --omit=dev
+
+COPY . .
+
+# DNS (UDP), HTTP proxy, TCP proxy range, Web GUI
+EXPOSE 53/udp
+EXPOSE 80/tcp
+EXPOSE 5731/tcp 5732/tcp 5733/tcp 5734/tcp 5738/tcp 5739/tcp
+EXPOSE 8080/tcp
+
+ENV OVERRIDE_IP=0.0.0.0
+
+CMD ["node", "src/main.js"]

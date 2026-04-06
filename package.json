@@ -5,6 +5,7 @@
   "main": "src/main.js",
   "scripts": {
     "start": "node src/main.js",
+    "dns": "node src/dns-standalone.js",
     "test": "node --test"
   },
   "dependencies": {

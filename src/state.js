@@ -3,7 +3,7 @@ const fs     = require('fs');
 const path   = require('path');
 const { EventEmitter } = require('events');
 
-const RULES_PATH  = path.join(__dirname, '..', 'spoof-rules.json');
+const RULES_PATH  = path.join(__dirname, '..', 'test-rules.json');
 const MAX_PACKETS = 2000;
 
 const emitter = new EventEmitter();

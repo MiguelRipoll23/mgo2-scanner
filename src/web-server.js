@@ -127,7 +127,7 @@ function startWebServer() {
     });
 
     server.listen(WEB_PORT, '127.0.0.1', () => {
-      console.log(`[WEB] GUI available at http://127.0.0.1:${WEB_PORT}`);
+      console.log(`[WEB] UI available at http://127.0.0.1:${WEB_PORT}`);
       resolve(server);
     });
   });

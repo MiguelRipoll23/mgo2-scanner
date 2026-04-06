@@ -27,26 +27,130 @@ const COL_BLUE   = col32(0.40, 0.72, 0.98); // counters / search highlights
 
 // ─── Command ID → name ────────────────────────────────────────────────────────
 const CMD_NAMES = {
-  0x0003: 'DISCONNECT',          0x0005: 'KEEP_ALIVE',
-  0x2002: 'GATE_LIST',           0x2003: 'GATE_HELLO',
-  0x2004: 'GATE_ACK',            0x2005: 'GET_LOBBY_LIST',
-  0x3003: 'CHECK_SESSION',       0x3004: 'CHECK_SESSION_RESP',
-  0x3048: 'GET_CHARACTER_LIST',
-  0x4100: 'GET_CHARACTER_INFO',  0x4102: 'GET_PERSONAL_STATS',
-  0x4300: 'GET_GAME_LIST',       0x4304: 'GET_HOST_SETTINGS',
-  0x4310: 'CHECK_HOST_SETTINGS', 0x4312: 'GET_GAME_DETAILS',
-  0x4316: 'CREATE_GAME',         0x4320: 'JOIN_GAME',
-  0x4340: 'PLAYER_CONNECTED',    0x4342: 'PLAYER_DISCONNECTED',
-  0x4350: 'UPDATE_STATS',        0x4380: 'QUIT_GAME',
-  0x4392: 'SET_GAME',            0x4398: 'UPDATE_PINGS',
-  0x43a0: 'PASS_ROUND',          0x43ca: 'START_ROUND',
-  0x4400: 'SEND_CHAT',
-  0x4500: 'ADD_FRIENDS_BLOCKED', 0x4510: 'REMOVE_FRIENDS_BLOCKED',
+  // Common
+  0x0003: 'DISCONNECT',                    0x0005: 'KEEP_ALIVE',
+
+  // Gate server
+  0x2002: 'GATE_LIST',                     0x2003: 'GATE_HELLO',
+  0x2004: 'GATE_ACK',                      0x2005: 'GET_LOBBY_LIST',
+  0x2008: 'GET_NEWS',
+  0x2009: 'GET_NEWS_START',                0x200a: 'GET_NEWS_ITEM',
+  0x200b: 'GET_NEWS_END',
+
+  // Account server — session & characters
+  0x3003: 'CHECK_SESSION',                 0x3004: 'CHECK_SESSION_RESP',
+  0x3048: 'GET_CHARACTER_LIST',            0x3049: 'GET_CHARACTER_LIST_RESP',
+  0x3101: 'CREATE_CHARACTER',              0x3102: 'CREATE_CHARACTER_RESP',
+  0x3103: 'SELECT_CHARACTER',              0x3104: 'SELECT_CHARACTER_RESP',
+  0x3105: 'DELETE_CHARACTER',              0x3106: 'DELETE_CHARACTER_RESP',
+
+  // Game server — character info
+  0x4100: 'GET_CHARACTER_INFO',            0x4101: 'GET_CHARACTER_INFO_RESP',
+  0x4102: 'GET_PERSONAL_STATS',            0x4103: 'GET_PERSONAL_STATS_RESP',
+  0x4110: 'UPDATE_GAMEPLAY_OPTIONS',       0x4111: 'UPDATE_GAMEPLAY_OPTIONS_RESP',
+  0x4112: 'UPDATE_UI_SETTINGS',            0x4113: 'UPDATE_UI_SETTINGS_RESP',
+  0x4114: 'UPDATE_CHAT_MACROS',            0x4115: 'UPDATE_CHAT_MACROS_RESP',
+  0x411a: 'GET_CHAT_MACROS',              0x411b: 'GET_GAMEPLAY_OPTIONS',
+  0x4120: 'GET_GAMEPLAY_OPTIONS_RESP',     0x4121: 'GET_CHAT_MACROS_RESP',
+  0x4122: 'GET_PERSONAL_INFO',
+  0x4124: 'GET_GEAR',                      0x4125: 'GET_SKILLS',
+  0x4128: 'GET_POST_GAME_INFO',            0x4129: 'GET_POST_GAME_INFO_RESP',
+  0x4130: 'UPDATE_PERSONAL_INFO',          0x4131: 'UPDATE_PERSONAL_INFO_RESP',
+  0x4140: 'GET_SKILL_SETS',               0x4141: 'UPDATE_SKILL_SETS',
+  0x4142: 'GET_GEAR_SETS',                0x4143: 'UPDATE_GEAR_SETS',
+  0x4144: 'UPDATE_GEAR_SETS_RESP',
+  0x4150: 'GET_LOBBY_DISCONNECT',          0x4151: 'GET_LOBBY_DISCONNECT_RESP',
+  0x4220: 'GET_CHARACTER_CARD',            0x4221: 'GET_CHARACTER_CARD_RESP',
+
+  // Game server — game list
+  0x4300: 'GET_GAME_LIST',
+  0x4301: 'GET_GAME_LIST_START',           0x4302: 'GET_GAME_LIST_ITEM',
+  0x4303: 'GET_GAME_LIST_END',
+  0x4304: 'GET_HOST_SETTINGS',             0x4305: 'GET_HOST_SETTINGS_RESP',
+  0x4310: 'CHECK_HOST_SETTINGS',           0x4311: 'CHECK_HOST_SETTINGS_RESP',
+  0x4312: 'GET_GAME_DETAILS',              0x4313: 'GET_GAME_DETAILS_RESP',
+  0x4316: 'CREATE_GAME',                   0x4317: 'CREATE_GAME_RESP',
+  0x4320: 'JOIN_GAME',                     0x4321: 'JOIN_GAME_RESP',
+  0x4322: 'JOIN_GAME_FAILED',
+
+  // Game server — in-game
+  0x4340: 'PLAYER_CONNECTED',              0x4341: 'PLAYER_CONNECTED_RESP',
+  0x4342: 'PLAYER_DISCONNECTED',           0x4343: 'PLAYER_DISCONNECTED_RESP',
+  0x4344: 'SET_PLAYER_TEAM',               0x4345: 'SET_PLAYER_TEAM_RESP',
+  0x4346: 'KICK_PLAYER',                   0x4347: 'KICK_PLAYER_RESP',
+  0x4348: 'HOST_PASS',                     0x4349: 'HOST_PASS_RESP',
+  0x4350: 'UPDATE_STATS',                  0x4351: 'UPDATE_STATS_RESP',
+  0x4380: 'QUIT_GAME',                     0x4381: 'QUIT_GAME_RESP',
+  0x4390: 'HOST_UPDATE_STATS',             0x4391: 'HOST_UPDATE_STATS_RESP',
+  0x4392: 'SET_GAME',                      0x4393: 'SET_GAME_RESP',
+  0x4398: 'UPDATE_PINGS',                  0x4399: 'UPDATE_PINGS_RESP',
+  0x43a0: 'PASS_ROUND',                    0x43a1: 'PASS_ROUND_RESP',
+  0x43a2: 'PASS_ROUND_UNK',               0x43a3: 'PASS_ROUND_UNK_RESP',
+  0x43c0: 'HOST_UNK_43C0',               0x43c1: 'HOST_UNK_43C0_RESP',
+  0x43ca: 'START_ROUND',                   0x43cb: 'START_ROUND_RESP',
+  0x43d0: 'TRAINING_CONNECT',              0x43d1: 'TRAINING_CONNECT_RESP',
+
+  // Game server — chat
+  0x4400: 'SEND_CHAT',                     0x4401: 'SEND_CHAT_RESP',
+  0x4440: 'CHAT_UNK_4440',               0x4441: 'CHAT_UNK_4440_RESP',
+
+  // Game server — friends / blocked
+  0x4500: 'ADD_FRIENDS_BLOCKED',           0x4501: 'ADD_FRIENDS_BLOCKED_RESP',
+  0x4510: 'REMOVE_FRIENDS_BLOCKED',        0x4511: 'REMOVE_FRIENDS_BLOCKED_RESP',
+  0x4580: 'GET_FRIENDS_BLOCKED_LIST',      0x4581: 'GET_FRIENDS_BLOCKED_LIST_RESP',
+
+  // Game server — search / history
   0x4600: 'SEARCH_PLAYER',
-  0x4700: 'SESSION_AUTH',        0x4701: 'SESSION_AUTH_RESP',
-  0x4800: 'SEND_MESSAGE',        0x4820: 'GET_MESSAGES',
-  0x4900: 'GET_GAME_LOBBY_INFO', 0x4990: 'GET_GAME_ENTRY_INFO',
-  0x4b00: 'CREATE_CLAN',         0x4b10: 'GET_CLAN_LIST',
+  0x4601: 'SEARCH_PLAYER_START',           0x4602: 'SEARCH_PLAYER_RESULT',
+  0x4603: 'SEARCH_PLAYER_END',
+  0x4680: 'GET_MATCH_HISTORY',
+  0x4681: 'GET_MATCH_HISTORY_1',           0x4682: 'GET_MATCH_HISTORY_2',
+  0x4683: 'GET_MATCH_HISTORY_3',
+
+  // Game server — session auth
+  0x4700: 'SESSION_AUTH',                  0x4701: 'SESSION_AUTH_RESP',
+
+  // Game server — messages
+  0x4800: 'SEND_MESSAGE',                  0x4801: 'SEND_MESSAGE_RESP',
+  0x4820: 'GET_MESSAGES',
+  0x4821: 'GET_MESSAGES_START',            0x4822: 'GET_MESSAGES_ITEM',
+  0x4823: 'GET_MESSAGES_END',
+  0x4840: 'GET_MESSAGE_CONTENTS',          0x4841: 'GET_MESSAGE_CONTENTS_RESP',
+  0x4860: 'ADD_SENT_MESSAGE',              0x4861: 'ADD_SENT_MESSAGE_RESP',
+
+  // Game server — lobby info
+  0x4900: 'GET_GAME_LOBBY_INFO',
+  0x4901: 'GET_GAME_LOBBY_INFO_START',     0x4902: 'GET_GAME_LOBBY_INFO_ITEM',
+  0x4903: 'GET_GAME_LOBBY_INFO_END',
+  0x4990: 'GET_GAME_ENTRY_INFO',           0x4991: 'GET_GAME_ENTRY_INFO_RESP',
+
+  // Game server — clans
+  0x4b00: 'CREATE_CLAN',                   0x4b01: 'CREATE_CLAN_RESP',
+  0x4b04: 'DISBAND_CLAN',                  0x4b05: 'DISBAND_CLAN_RESP',
+  0x4b10: 'GET_CLAN_LIST',
+  0x4b11: 'GET_CLAN_LIST_START',           0x4b12: 'GET_CLAN_LIST_ITEM',
+  0x4b13: 'GET_CLAN_LIST_END',
+  0x4b20: 'GET_CLAN_MEMBER_INFO',          0x4b21: 'GET_CLAN_MEMBER_INFO_RESP',
+  0x4b30: 'ACCEPT_CLAN_JOIN',              0x4b31: 'ACCEPT_CLAN_JOIN_RESP',
+  0x4b32: 'DECLINE_CLAN_JOIN',             0x4b33: 'DECLINE_CLAN_JOIN_RESP',
+  0x4b36: 'BANISH_CLAN_MEMBER',            0x4b37: 'BANISH_CLAN_MEMBER_RESP',
+  0x4b40: 'LEAVE_CLAN',                    0x4b41: 'LEAVE_CLAN_RESP',
+  0x4b42: 'APPLY_TO_CLAN',                 0x4b43: 'APPLY_TO_CLAN_RESP',
+  0x4b46: 'UPDATE_CLAN_STATE',             0x4b47: 'UPDATE_CLAN_STATE_RESP',
+  0x4b48: 'GET_CLAN_EMBLEM_LOBBY',         0x4b49: 'GET_CLAN_EMBLEM_LOBBY_RESP',
+  0x4b4a: 'GET_CLAN_EMBLEM',              0x4b4b: 'GET_CLAN_EMBLEM_RESP',
+  0x4b4c: 'GET_CLAN_EMBLEM_WIP',          0x4b4d: 'GET_CLAN_EMBLEM_WIP_RESP',
+  0x4b50: 'SET_CLAN_EMBLEM',               0x4b51: 'SET_CLAN_EMBLEM_RESP',
+  0x4b52: 'GET_CLAN_ROSTER',               0x4b53: 'GET_CLAN_ROSTER_RESP',
+  0x4b60: 'TRANSFER_CLAN_LEADERSHIP',      0x4b61: 'TRANSFER_CLAN_LEADERSHIP_RESP',
+  0x4b62: 'SET_EMBLEM_EDITOR',             0x4b63: 'SET_EMBLEM_EDITOR_RESP',
+  0x4b64: 'UPDATE_CLAN_COMMENT',           0x4b65: 'UPDATE_CLAN_COMMENT_RESP',
+  0x4b66: 'UPDATE_CLAN_NOTICE',            0x4b67: 'UPDATE_CLAN_NOTICE_RESP',
+  0x4b70: 'GET_CLAN_STATS',               0x4b71: 'GET_CLAN_STATS_RESP',
+  0x4b80: 'GET_CLAN_INFO',                0x4b81: 'GET_CLAN_INFO_RESP',
+  0x4b90: 'SEARCH_CLAN',
+  0x4b91: 'SEARCH_CLAN_START',             0x4b92: 'SEARCH_CLAN_RESULT',
+  0x4b93: 'SEARCH_CLAN_END',
 };
 
 function cmdHex(cmd)  { return '0x' + cmd.toString(16).toUpperCase().padStart(4, '0'); }
@@ -112,6 +216,7 @@ const tcpStatuses = [];
 let autoScroll  = true;
 let selectedIdx = -1;
 let pendingSelectedIdx = null;
+let packetListScrollY = 0;
 
 // Current-packet detail (updated on selection change)
 const detail = {
@@ -265,8 +370,9 @@ function hasUnsavedPacketEdits() {
 }
 
 function requestPacketSelection(idx) {
-  if (idx === selectedIdx) return;
+  if (idx === selectedIdx && !editingRule) return;
   selectedIdx = idx;
+  loadSelectedDetailFromPacket();
 }
 
 function getSelectedPacket() {
@@ -329,6 +435,19 @@ function queueSpoofSync() {
   const pkt = getSelectedPacket();
   if (!pkt) return;
   pendingSave = { cmd: pkt.cmd, isInbound: pkt.isInbound, payloadHex: detail.compact };
+
+  // Auto-create rule and switch to rule editing view on first edit
+  if (!getSelectedRule()) {
+    const newRule = { cmd: pkt.cmd, isInbound: pkt.isInbound, payloadHex: detail.compact };
+    if (!spoofRules.find(r => r.cmd === newRule.cmd && r.isInbound === newRule.isInbound))
+      spoofRules.push(newRule);
+    editingRule = { cmd: pkt.cmd, isInbound: pkt.isInbound, payloadHex: detail.compact };
+    selectedIdx = -1;
+    detail.lastIdx = -3;
+    detail.packet = '';
+    searchState.results = [];
+    searchState.index = -1;
+  }
 }
 
 function currentPlainPacketCompact() {
@@ -345,6 +464,12 @@ function restoreCurrentPayload() {
   queueSpoofSync();
 }
 
+function fmtDatetime() {
+  const d = new Date();
+  const p = n => String(n).padStart(2, '0');
+  return `${d.getFullYear()}${p(d.getMonth()+1)}${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}`;
+}
+
 function exportCurrentPacket() {
   const compact = currentPlainPacketCompact();
   if (!compact) return;
@@ -354,7 +479,7 @@ function exportCurrentPacket() {
   const pkt = getSelectedPacket();
   const link = document.createElement('a');
   link.href = url;
-  link.download = `${cmdHex(pkt?.cmd ?? 0).slice(2)}-${pkt?.isInbound ? 'in' : 'out'}.bin`;
+  link.download = `${cmdHex(pkt?.cmd ?? 0).slice(2)}-${pkt?.isInbound ? 'in' : 'out'}-${fmtDatetime()}.bin`;
   link.click();
   URL.revokeObjectURL(url);
 }
@@ -363,6 +488,28 @@ function copyCurrentPacket() {
   const compact = currentPlainPacketCompact();
   if (!compact) return;
   const text = compact.toUpperCase();
+  if (navigator.clipboard?.writeText) {
+    navigator.clipboard.writeText(text).catch(() => ImGui.SetClipboardText(text));
+    return;
+  }
+  ImGui.SetClipboardText(text);
+}
+
+function exportCurrentRule() {
+  if (!editingRule || !detail.compact) return;
+  const bytes = compactToBytes(detail.compact);
+  const blob = new Blob([bytes], { type: 'application/octet-stream' });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = `${cmdHex(editingRule.cmd).slice(2)}-${editingRule.isInbound ? 'in' : 'out'}-${fmtDatetime()}.bin`;
+  link.click();
+  URL.revokeObjectURL(url);
+}
+
+function copyCurrentRule() {
+  if (!editingRule || !detail.compact) return;
+  const text = detail.compact.toUpperCase();
   if (navigator.clipboard?.writeText) {
     navigator.clipboard.writeText(text).catch(() => ImGui.SetClipboardText(text));
     return;
@@ -510,9 +657,9 @@ function decodeCString(bytes) {
 }
 
 function encodeCString(text, fieldLen) {
-  const out = new Uint8Array(fieldLen);
+  const out = new Uint8Array(fieldLen); // zero-initialised — guarantees null terminator
   const bytes = new TextEncoder().encode(text);
-  out.set(bytes.slice(0, fieldLen));
+  out.set(bytes.slice(0, fieldLen - 1)); // reserve last byte for null
   return out;
 }
 
@@ -535,7 +682,7 @@ function syncInspectorFields(buf, dv, n) {
     float64: n >= 8 ? String(dv.getFloat64(0, false)) : '',
     binary: n >= 1 ? dv.getUint8(0).toString(2).padStart(8, '0') : '',
     string: decodePrintableAscii(buf.slice(0, Math.min(26, n))),
-    ystring: decodeCString(buf.slice(0, Math.min(26, n))),
+    cstring: decodeCString(buf),
   };
 }
 
@@ -789,10 +936,11 @@ function editRow(label, fieldKey, byteLen, parseToBytes) {
   n >= 1 ? editRow('string', 'string', Math.min(26, n), value => {
     return encodeAsciiPatch(value.slice(0, Math.min(26, n)), buf.slice(0, Math.min(26, n)));
   }) : na('string');
-  const cStringLen = Math.min(buf.indexOf(0) === -1 ? Math.min(26, n) : buf.indexOf(0) + 1, Math.min(26, n));
-  n >= 1 ? editRow('ystring', 'ystring', cStringLen, value => {
+  const nullAt = buf.indexOf(0);
+  const cStringLen = nullAt === -1 ? Math.min(64, n) : nullAt + 1;
+  n >= 1 ? editRow('cstring', 'cstring', cStringLen, value => {
     return encodeCString(value, cStringLen);
-  }) : na('ystring');
+  }) : na('cstring');
 
   ImGui.EndTable();
 }
@@ -826,22 +974,27 @@ function renderRightSidebar(vpH) {
 
           if (!hasSel && !editingRule) {
             ImGui.TextDisabled('No packet selected.');
+          } else if (editingRule) {
+            ImGui.Spacing();
+            const actionGap = 6;
+            const actionW = Math.floor((ImGui.GetContentRegionAvail().x - actionGap) / 2);
+            if (ImGui.Button('Export##rule', new ImVec2(actionW, 0))) exportCurrentRule();
+            ImGui.SameLine(0, actionGap);
+            if (ImGui.Button('Copy##rule', new ImVec2(actionW, 0))) copyCurrentRule();
           } else if (hasSel) {
             const pkt     = packets[selectedIdx];
             const hasRule = !!getSelectedRule();
 
             ImGui.Spacing();
             const actionGap = 6;
-            const actionW = Math.floor((ImGui.GetContentRegionAvail().x - actionGap * 2) / 3);
+            const actionW = Math.floor((ImGui.GetContentRegionAvail().x - actionGap) / 2);
             if (ImGui.Button('Export', new ImVec2(actionW, 0))) exportCurrentPacket();
             ImGui.SameLine(0, actionGap);
             if (ImGui.Button('Copy', new ImVec2(actionW, 0))) copyCurrentPacket();
-            ImGui.SameLine(0, actionGap);
-            if (ImGui.Button('Restore', new ImVec2(actionW, 0))) restoreCurrentPayload();
 
             ImGui.Spacing();
             const spoofRuleEnabled = [hasRule];
-            if (ImGui.Checkbox('Must spoof', spoofRuleEnabled)) {
+            if (ImGui.Checkbox('Must test', spoofRuleEnabled)) {
               if (spoofRuleEnabled[0]) pendingSave = { cmd: pkt.cmd, isInbound: pkt.isInbound, payloadHex: detail.compact };
               else pendingDelete = { cmd: pkt.cmd, isInbound: pkt.isInbound };
             }
@@ -871,7 +1024,7 @@ function renderSpoofRulesSection() {
     ImGui.PushStyleColor(IMGUI_COL_BUTTON_HOVERED, col32(0.92, 0.30, 0.30, 1.0));
     ImGui.PushStyleColor(IMGUI_COL_BUTTON_ACTIVE, col32(0.68, 0.18, 0.18, 1.0));
   }
-  if (ImGui.Button(spoofingEnabled ? 'Stop spoofing' : 'Start spoofing')) {
+  if (ImGui.Button(spoofingEnabled ? 'Stop testing' : 'Start testing')) {
     pendingSpoofingEnabled = !spoofingEnabled;
     spoofingEnabled = !spoofingEnabled;
   }
@@ -882,7 +1035,7 @@ function renderSpoofRulesSection() {
 
   ImGui.Spacing();
   // Header row
-  ImGui.TextDisabled(`Spoof Rules (${spoofRules.length})`);
+  ImGui.TextDisabled(`Test Rules (${spoofRules.length})`);
 
   if (spoofRules.length === 0) {
     ImGui.TextDisabled('  No active rules.');
@@ -951,6 +1104,8 @@ function renderPacketList() {
     ImGui.TableSetupColumn('Name', CF_WidthStretch,  0);
     ImGui.TableHeadersRow();
 
+    const scrollYBeforeRows = ImGui.GetScrollY();
+
     for (let i = 0; i < packets.length; i++) {
       const pkt = packets[i];
       ImGui.PushStyleColor(0, pkt.isInbound ? COL_GREEN : COL_PURPLE);
@@ -968,7 +1123,13 @@ function renderPacketList() {
       ImGui.PopStyleColor(1);
     }
 
-    if (autoScroll) ImGui.SetScrollHereY(1.0);
+    if (autoScroll) {
+      ImGui.SetScrollHereY(1.0);
+      packetListScrollY = ImGui.GetScrollMaxY();
+    } else {
+      packetListScrollY = scrollYBeforeRows;
+      ImGui.SetScrollY(packetListScrollY);
+    }
     ImGui.EndTable();
   } finally {
     ImGui.EndChild();
@@ -1118,7 +1279,7 @@ function renderUnsavedSelectionModal(vpW, vpH) {
   showUnsavedSelectionModal = openRef[0];
   if (!showUnsavedSelectionModal) pendingSelectedIdx = null;
   try {
-    ImGui.TextWrapped('The current packet has unsaved edits and "Must spoof" is not enabled.');
+    ImGui.TextWrapped('The current packet has unsaved edits and "Must test" is not enabled.');
     ImGui.TextWrapped('Change selection and discard those edits?');
     ImGui.Spacing();
     if (ImGui.Button('Discard and continue')) {
@@ -1141,9 +1302,9 @@ function renderClearRulesConfirmModal(vpW, vpH) {
   if (!showClearRulesConfirm) return;
   ImGui.SetNextWindowPos(new ImVec2(Math.floor((vpW - 320) * 0.5), Math.floor((vpH - 90) * 0.5)), 4);
   ImGui.SetNextWindowSize(new ImVec2(320, 90), 4);
-  ImGui.Begin('Clear Spoof Rules', null, WF_NoResize);
+  ImGui.Begin('Clear Test Rules', null, WF_NoResize);
   try {
-    ImGui.TextWrapped(`Clear all ${spoofRules.length} spoof rule${spoofRules.length !== 1 ? 's' : ''}? This cannot be undone.`);
+    ImGui.TextWrapped(`Clear all ${spoofRules.length} test rule${spoofRules.length !== 1 ? 's' : ''}? This cannot be undone.`);
     if (ImGui.Button('Clear all')) { pendingClearRules = true; showClearRulesConfirm = false; }
     ImGui.SameLine(0, 8);
     if (ImGui.Button('Cancel')) showClearRulesConfirm = false;
@@ -1157,11 +1318,11 @@ function renderDeleteRuleConfirmModal(vpW, vpH) {
   if (!pendingDeleteConfirmRule) return;
   ImGui.SetNextWindowPos(new ImVec2(Math.floor((vpW - 360) * 0.5), Math.floor((vpH - 90) * 0.5)), 4);
   ImGui.SetNextWindowSize(new ImVec2(360, 90), 4);
-  ImGui.Begin('Delete Spoof Rule', null, WF_NoResize);
+  ImGui.Begin('Delete Test Rule', null, WF_NoResize);
   try {
     const r = pendingDeleteConfirmRule;
     const _rName = CMD_NAMES[r.cmd] ? ` ${CMD_NAMES[r.cmd]}` : '';
-    ImGui.TextWrapped(`Delete spoof rule for ${cmdHex(r.cmd)}${_rName} (${r.isInbound ? 'IN' : 'OUT'})?`);
+    ImGui.TextWrapped(`Delete test rule for ${cmdHex(r.cmd)}${_rName} (${r.isInbound ? 'IN' : 'OUT'})?`);
     if (ImGui.Button('Delete')) {
       pendingDelete = { cmd: r.cmd, isInbound: r.isInbound };
       if (editingRule && editingRule.cmd === r.cmd && editingRule.isInbound === r.isInbound) {
@@ -1231,7 +1392,7 @@ function renderMainWindow(vpW, vpH) {
             packets.length = 0; selectedIdx = -1;
             detail.compact = ''; detail.original = ''; detail.packet = ''; detail.lastIdx = -2; detail.cursorByte = 0;
           }
-          if (ImGui.MenuItem('Clear Spoof Rules')) showClearRulesConfirm = true;
+          if (ImGui.MenuItem('Clear Test Rules')) showClearRulesConfirm = true;
           ImGui.Separator();
           if (ImGui.MenuItem('Search value')) searchState.open = true;
           ImGui.EndMenu();

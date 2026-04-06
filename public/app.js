@@ -213,9 +213,8 @@ let spoofingEnabled = false;
 let keepUpstreamOpen = false;
 const tcpStatuses = [];
 
-let autoScroll  = true;
+let autoScroll  = false;
 let selectedIdx = -1;
-let pendingSelectedIdx = null;
 let packetListScrollY = 0;
 
 // Current-packet detail (updated on selection change)
@@ -229,6 +228,8 @@ const detail = {
 
 const inspectorEd = {
   key: '',
+  cursorKey: '',
+  cStringLen: 1,
   fields: Object.create(null),
 };
 
@@ -249,7 +250,6 @@ let pendingSave   = null;
 let pendingClearRules = false;
 let pendingSpoofingEnabled = null;
 let pendingExcludedRule = null;
-let showUnsavedSelectionModal = false;
 let showConnectionStateModal = false;
 let pendingKeepUpstreamOpen = null;
 let editingRule = null;              // { cmd, isInbound, payloadHex } — rule editing mode
@@ -362,12 +362,6 @@ function isRangeModified(byteLen) {
   return detail.compact.slice(start, end) !== detail.original.slice(start, end);
 }
 
-function hasUnsavedPacketEdits() {
-  if (editingRule) return false; // rule edits are sent immediately
-  const pkt = getSelectedPacket();
-  if (!pkt) return false;
-  return detail.compact !== detail.original && !getSelectedRule();
-}
 
 function requestPacketSelection(idx) {
   if (idx === selectedIdx && !editingRule) return;
@@ -404,7 +398,7 @@ function startEditingRule(rule) {
   detail.packet     = '';
   detail.lastIdx    = -3; // sentinel for rule-edit mode
   detail.cursorByte = 0;
-  inspectorEd.key   = '';
+  inspectorEd.key = ''; inspectorEd.cursorKey = '';
   searchState.results = [];
   searchState.index   = -1;
 }
@@ -419,7 +413,7 @@ function loadSelectedDetailFromPacket(preserveSearch = false) {
   detail.original = visiblePayload;
   detail.packet = pkt.packet || '';
   detail.cursorByte = 0;
-  inspectorEd.key = '';
+  inspectorEd.key = ''; inspectorEd.cursorKey = '';
   if (!preserveSearch) {
     searchState.results = [];
     searchState.index = -1;
@@ -460,7 +454,7 @@ function currentPlainPacketCompact() {
 
 function restoreCurrentPayload() {
   detail.compact = detail.original;
-  inspectorEd.key = '';
+  inspectorEd.key = ''; inspectorEd.cursorKey = '';
   queueSpoofSync();
 }
 
@@ -663,9 +657,29 @@ function encodeCString(text, fieldLen) {
   return out;
 }
 
+const CSTRING_SCAN_LIMIT = 32;
+
 function syncInspectorFields(buf, dv, n) {
   const off = detail.cursorByte;
-  const key = `${detail.lastIdx}:${off}:${detail.compact}`;
+  const cursorKey = `${detail.lastIdx}:${off}`;
+  const key = `${cursorKey}:${detail.compact}`;
+
+  // Recalculate cstring state only when the cursor moves to a new position.
+  // - Cap the null search to CSTRING_SCAN_LIMIT bytes so we never treat a
+  //   distant null (from a different field) as our terminator and accidentally
+  //   clobber many bytes on write.
+  // - The cstring display value is also only refreshed here; between cursor
+  //   moves it keeps whatever the user last typed so jsimgui's InputText
+  //   internal cursor position is not reset on every keystroke.
+  const cursorMoved = inspectorEd.cursorKey !== cursorKey;
+  if (cursorMoved) {
+    inspectorEd.cursorKey = cursorKey;
+    const scanLimit = Math.min(CSTRING_SCAN_LIMIT, n);
+    const nullAt = buf.slice(0, scanLimit).indexOf(0);
+    inspectorEd.cStringLen = nullAt === -1 ? scanLimit : nullAt + 1;
+    inspectorEd.fields['cstring'] = decodeCString(buf.slice(0, scanLimit));
+  }
+
   if (inspectorEd.key === key) return;
   inspectorEd.key = key;
 
@@ -682,7 +696,9 @@ function syncInspectorFields(buf, dv, n) {
     float64: n >= 8 ? String(dv.getFloat64(0, false)) : '',
     binary: n >= 1 ? dv.getUint8(0).toString(2).padStart(8, '0') : '',
     string: decodePrintableAscii(buf.slice(0, Math.min(26, n))),
-    cstring: decodeCString(buf),
+    // Preserve the cstring value the user is typing; only refresh it when the
+    // cursor moves (handled above in the cursorMoved branch).
+    cstring: inspectorEd.fields['cstring'] ?? '',
   };
 }
 
@@ -936,8 +952,7 @@ function editRow(label, fieldKey, byteLen, parseToBytes) {
   n >= 1 ? editRow('string', 'string', Math.min(26, n), value => {
     return encodeAsciiPatch(value.slice(0, Math.min(26, n)), buf.slice(0, Math.min(26, n)));
   }) : na('string');
-  const nullAt = buf.indexOf(0);
-  const cStringLen = nullAt === -1 ? Math.min(64, n) : nullAt + 1;
+  const cStringLen = inspectorEd.cStringLen;
   n >= 1 ? editRow('cstring', 'cstring', cStringLen, value => {
     return encodeCString(value, cStringLen);
   }) : na('cstring');
@@ -982,8 +997,7 @@ function renderRightSidebar(vpH) {
             ImGui.SameLine(0, actionGap);
             if (ImGui.Button('Copy##rule', new ImVec2(actionW, 0))) copyCurrentRule();
           } else if (hasSel) {
-            const pkt     = packets[selectedIdx];
-            const hasRule = !!getSelectedRule();
+            const pkt = packets[selectedIdx];
 
             ImGui.Spacing();
             const actionGap = 6;
@@ -993,11 +1007,6 @@ function renderRightSidebar(vpH) {
             if (ImGui.Button('Copy', new ImVec2(actionW, 0))) copyCurrentPacket();
 
             ImGui.Spacing();
-            const spoofRuleEnabled = [hasRule];
-            if (ImGui.Checkbox('Must test', spoofRuleEnabled)) {
-              if (spoofRuleEnabled[0]) pendingSave = { cmd: pkt.cmd, isInbound: pkt.isInbound, payloadHex: detail.compact };
-              else pendingDelete = { cmd: pkt.cmd, isInbound: pkt.isInbound };
-            }
             const excludeFuture = [!!getSelectedExcludedRule()];
             if (ImGui.Checkbox('Must ignore', excludeFuture)) {
               pendingExcludedRule = { cmd: pkt.cmd, isInbound: pkt.isInbound, enabled: excludeFuture[0] };
@@ -1265,33 +1274,6 @@ function renderSearchWindow(vpW, vpH) {
       : `${searchState.index + 1} / ${searchState.results.length}`;
     ImGui.TextDisabled(resultText);
 
-  } finally {
-    ImGui.End();
-  }
-}
-
-function renderUnsavedSelectionModal(vpW, vpH) {
-  if (!showUnsavedSelectionModal) return;
-  ImGui.SetNextWindowPos(new ImVec2(Math.floor((vpW - 360) * 0.5), Math.floor((vpH - 140) * 0.5)), 4);
-  ImGui.SetNextWindowSize(new ImVec2(360, 140), 4);
-  const openRef = [showUnsavedSelectionModal];
-  ImGui.Begin('Unsaved changes', openRef, WF_NoResize);
-  showUnsavedSelectionModal = openRef[0];
-  if (!showUnsavedSelectionModal) pendingSelectedIdx = null;
-  try {
-    ImGui.TextWrapped('The current packet has unsaved edits and "Must test" is not enabled.');
-    ImGui.TextWrapped('Change selection and discard those edits?');
-    ImGui.Spacing();
-    if (ImGui.Button('Discard and continue')) {
-      if (pendingSelectedIdx !== null) selectedIdx = pendingSelectedIdx;
-      pendingSelectedIdx = null;
-      showUnsavedSelectionModal = false;
-    }
-    ImGui.SameLine(0, 8);
-    if (ImGui.Button('Cancel')) {
-      pendingSelectedIdx = null;
-      showUnsavedSelectionModal = false;
-    }
   } finally {
     ImGui.End();
   }

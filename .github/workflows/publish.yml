@@ -47,9 +47,8 @@ jobs:
         with:
           context: .
           # linux/arm64  = Raspberry Pi 4/5 (64-bit OS)
-          # linux/arm/v7 = Raspberry Pi 2/3 (32-bit OS)
           # linux/amd64  = standard x86_64
-          platforms: linux/amd64,linux/arm64,linux/arm/v7
+          platforms: linux/amd64,linux/arm64
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}

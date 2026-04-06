@@ -16,7 +16,7 @@ A real-time network packet scanner and test tool for MGO2 (Metal Gear Online 2),
 
 ## Usage
 
-In RPCS3, go to settings and in the section `Metal Gear Online` set DNS IP address to `0.0.0.0`, then...
+In RPCS3, go to settings and in the `Metal Gear Online` section set DNS IP address to `0.0.0.0`, then...
 
 ```bash
 npm install

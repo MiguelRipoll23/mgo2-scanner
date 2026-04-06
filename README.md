@@ -9,11 +9,14 @@ A real-time network packet scanner and test tool for MGO2 (Metal Gear Online 2),
 - **Packet spoofing** — create persistent test rules per command ID and direction (IN/OUT) that replace payloads on the fly
 - **Packet exclusion** — hide specific command types from the capture list to reduce noise
 - **Hex search** — search across the selected packet's payload by string, hex, uint8/16/32 value with next/prev navigation
-- **DNS + HTTP proxy** — redirects MGO2 DNS queries and HTTP traffic to the local server transparently
+
+## Demo
 
 ![Screenshot](screenshot.png)
 
 ## Usage
+
+Set RPCS3 DNS port IP address to `0.0.0.0`, then...
 
 ```bash
 npm install

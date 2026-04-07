@@ -3,19 +3,8 @@
 const fs = require('fs');
 const path = require('path');
 
-const PACKET_KEY_PATH = path.join('C:', 'Users', 'migue', 'Desktop', 'network', 'blowfish-key.ts');
-const SERVER_CONSTANTS_PATH = path.join(
-  'C:',
-  'Users',
-  'migue',
-  'Documents',
-  'GitHub',
-  'mgo2-server',
-  'src',
-  'core',
-  'constants',
-  'crypto-keys-constants.ts'
-);
+const PACKET_KEY_PATH = path.join(__dirname, 'blowfish-key.ts');
+const SERVER_CONSTANTS_PATH = path.join(__dirname, 'crypto-keys-constants.ts');
 
 function parseUint8ArrayLiteral(source, constantName) {
   const pattern = new RegExp(`${constantName}[^\\[]*new Uint8Array\\(\\[([\\s\\S]*?)\\]\\)`);

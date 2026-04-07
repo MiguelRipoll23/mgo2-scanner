@@ -41,7 +41,7 @@ docker run -d \
   -e DNS_UPSTREAM_IP=8.8.8.8 \
   -e DNS_UPSTREAM_PORT=53 \
   -e DISABLE_DNS=false \
-  ghcr.io/miguelripoll23/mgo2-scanner:latest
+  ghcr.io/miguelripoll23/mgo2-scanner:main
 ```
 
 ### Environment variables

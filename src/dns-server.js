@@ -14,8 +14,8 @@ const dgram     = require('dgram');
 const dnsPacket = require('dns-packet');
 
 const DNS_PORT    = 53;
-const UPSTREAM_IP = '8.8.8.8';
-const UPSTREAM_PORT = 53;
+const UPSTREAM_IP   = process.env.DNS_UPSTREAM_IP   || '8.8.8.8';
+const UPSTREAM_PORT = parseInt(process.env.DNS_UPSTREAM_PORT || '53', 10);
 
 const OVERRIDE_IP = process.env.OVERRIDE_IP || '0.0.0.0';
 

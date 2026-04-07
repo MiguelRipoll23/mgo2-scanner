@@ -26,3 +26,29 @@ npm run start
 The web UI opens automatically at `http://127.0.0.1:8080`.
 
 Set `DISABLE_DNS=true` to skip the DNS server (e.g. if port 53 is already in use).
+
+## Docker
+
+```bash
+docker run -d \
+  --name mgo2-scanner \
+  -p 53:53/udp \
+  -p 80:80 \
+  -p 5731-5734:5731-5734 \
+  -p 5738-5739:5738-5739 \
+  -p 8080:8080 \
+  -e OVERRIDE_IP=0.0.0.0 \
+  -e DNS_UPSTREAM_IP=8.8.8.8 \
+  -e DNS_UPSTREAM_PORT=53 \
+  -e DISABLE_DNS=false \
+  ghcr.io/miguelripoll23/mgo2-scanner:latest
+```
+
+### Environment variables
+
+| Variable            | Default   | Description                                                  |
+|---------------------|-----------|--------------------------------------------------------------|
+| `OVERRIDE_IP`       | `0.0.0.0` | IP returned for `mgo2pc.com` and `game.mgo2pc.com` overrides |
+| `DNS_UPSTREAM_IP`   | `8.8.8.8` | Upstream DNS server IP for forwarded queries                 |
+| `DNS_UPSTREAM_PORT` | `53`      | Upstream DNS server port                                     |
+| `DISABLE_DNS`       | `false`   | Set to `true` to skip starting the DNS server                |

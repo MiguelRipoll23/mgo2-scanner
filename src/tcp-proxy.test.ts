@@ -1,24 +1,23 @@
-'use strict';
+import test from 'node:test';
+import assert from 'node:assert/strict';
 
-const test = require('node:test');
-const assert = require('node:assert/strict');
-
-const state = require('./state.js');
-const {
+import state from './state.js';
+import type { SpoofRule, Packet } from './state.js';
+import {
   xorCrypt,
   decryptPayload,
   encryptPayload,
   decodeSessionPayload,
   encodeSessionPayload,
   computePacketChecksum,
-} = require('./crypto.js');
-const { processSegment } = require('./tcp-proxy.js');
+} from './crypto.js';
+import { processSegment } from './tcp-proxy.js';
 
 const HEADER_SIZE = 24;
 const XOR_ONLY_CMD = 0x4440;
 const SESSION_CMD = 0x3003;
 
-function buildXorOnlyWirePacket(cmd, seq, plainPayload) {
+function buildXorOnlyWirePacket(cmd: number, seq: number, plainPayload: Buffer): Buffer {
   const header = Buffer.alloc(HEADER_SIZE);
   header.writeUInt16BE(cmd, 0);
   header.writeUInt16BE(plainPayload.length, 2);
@@ -29,7 +28,7 @@ function buildXorOnlyWirePacket(cmd, seq, plainPayload) {
   return xorCrypt(decryptedSegment);
 }
 
-function buildSessionWirePacket(cmd, seq, logicalPayload, isInbound) {
+function buildSessionWirePacket(cmd: number, seq: number, logicalPayload: Buffer, isInbound: boolean): Buffer {
   const header = Buffer.alloc(HEADER_SIZE);
   header.writeUInt16BE(cmd, 0);
   header.writeUInt16BE(logicalPayload.length, 2);
@@ -57,13 +56,13 @@ test('processSegment spoofs a normal XOR-only packet without introducing extra e
   const originalAddPacket = state.addPacket;
   const originalSpoofingEnabled = state.isSpoofingEnabled();
 
-  state.getSpoofRule = (cmd, isInbound) => {
+  state.getSpoofRule = (cmd: number, isInbound: boolean): SpoofRule | null => {
     if (cmd === XOR_ONLY_CMD && isInbound === false) {
       return { cmd, isInbound, payloadHex: spoofBytes.toString('hex') };
     }
     return null;
   };
-  state.addPacket = () => {};
+  state.addPacket = (_pkt: Packet): void => { /* no-op */ };
   state.setSpoofingEnabled(true);
 
   try {
@@ -107,13 +106,13 @@ test('processSegment spoofs the logical session payload for inbound 0x3003 and p
   const originalAddPacket = state.addPacket;
   const originalSpoofingEnabled = state.isSpoofingEnabled();
 
-  state.getSpoofRule = (cmd, isInbound) => {
+  state.getSpoofRule = (cmd: number, isInbound: boolean): SpoofRule | null => {
     if (cmd === SESSION_CMD && isInbound === true) {
       return { cmd, isInbound, payloadHex: expectedLogicalPayload.toString('hex') };
     }
     return null;
   };
-  state.addPacket = () => {};
+  state.addPacket = (_pkt: Packet): void => { /* no-op */ };
   state.setSpoofingEnabled(true);
 
   try {

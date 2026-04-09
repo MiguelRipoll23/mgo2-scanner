@@ -1,4 +1,3 @@
-'use strict';
 // TCP proxy for MGO2 game ports 5731-5739.
 //
 // For each inbound client connection on port P:
@@ -13,17 +12,17 @@
 //
 // Encryption sources: decode-tcp.ts (XOR) + blowfish-key.ts (Blowfish key table)
 
-const net   = require('net');
-const dns   = require('dns');
-const state = require('./state.js');
-const {
+import net from 'node:net';
+import dns from 'node:dns';
+import state from './state.js';
+import {
   xorCrypt,
   decryptPayload,
   encryptPayload,
   decodeSessionPayload,
   encodeSessionPayload,
   computePacketChecksum,
-} = require('./crypto.js');
+} from './crypto.js';
 
 // Game ports — from decode-tcp.ts TARGET_PORTS
 const GAME_PORTS    = [5731, 5732, 5733, 5735, 5737, 5738, 5739];
@@ -35,42 +34,9 @@ const KEEPALIVE_INTERVAL_MS = 30_000;
 const _resolver = new dns.Resolver();
 _resolver.setServers(['8.8.8.8']);
 
-let _realIp = null;
+let _realIp: string | null = null;
 
-function dirLabel(isInbound) {
-  return isInbound ? 'IN' : 'OUT';
-}
-
-function shortHex(buf, maxBytes = 48) {
-  const view = buf.subarray(0, Math.min(buf.length, maxBytes));
-  const hex = view.toString('hex').replace(/(..)/g, '$1 ').trim().toUpperCase();
-  return buf.length > maxBytes ? `${hex} ...` : hex;
-}
-
-function fullHex(buf) {
-  return buf.toString('hex').replace(/(..)/g, '$1 ').trim().toUpperCase();
-}
-
-function logForward(port, isInbound, buf, note = '') {
-  const suffix = note ? ` ${note}` : '';
-  console.log(`[TCP:${port}] ${dirLabel(isInbound)} forward ${buf.length}B${suffix} wire=${fullHex(buf)}`);
-}
-
-function logParsedPacket(port, isInbound, cmd, payloadLen, payloadDecrypted) {
-  console.log(
-    `[TCP:${port}] ${dirLabel(isInbound)} packet ${cmd.toString(16).toUpperCase().padStart(4, '0')} ${payloadLen}B decoded=${fullHex(payloadDecrypted)}`
-  );
-}
-
-function logSpoof(port, isInbound, cmd, originalPayload, modifiedPayload, wirePayload, finalSegment) {
-  console.warn(
-    `[TCP:${port}] ${dirLabel(isInbound)} spoof ${cmd.toString(16).toUpperCase().padStart(4, '0')} ` +
-    `decoded_before=${fullHex(originalPayload)} decoded_after=${fullHex(modifiedPayload)} ` +
-    `wire_payload=${fullHex(wirePayload)} final_wire=${fullHex(finalSegment)}`
-  );
-}
-
-function resolveServerIp() {
+function resolveServerIp(): Promise<string | null> {
   return new Promise(resolve => {
     _resolver.resolve4(TARGET_HOST, (err, addrs) => {
       if (err || !addrs || addrs.length === 0) {
@@ -85,10 +51,10 @@ function resolveServerIp() {
   });
 }
 
-function parseLastSequence(buf) {
+function parseLastSequence(buf: Buffer): number | null {
   const decrypted = xorCrypt(buf);
   let offset = 0;
-  let lastSeq = null;
+  let lastSeq: number | null = null;
 
   while (offset + HEADER_SIZE <= decrypted.length) {
     const payloadLen = decrypted.readUInt16BE(offset + 2);
@@ -101,7 +67,7 @@ function parseLastSequence(buf) {
   return lastSeq;
 }
 
-function buildKeepAlivePacket(sequence) {
+function buildKeepAlivePacket(sequence: number): Buffer {
   const header = Buffer.alloc(HEADER_SIZE);
   header.writeUInt16BE(KEEPALIVE_CMD, 0);
   header.writeUInt16BE(0, 2);
@@ -119,7 +85,7 @@ function buildKeepAlivePacket(sequence) {
 //   - Apply spoof rules: replace payload bytes in the decrypted buffer
 //   - XOR-re-encrypt modified buffer
 // Returns the buffer to forward (possibly modified).
-function processSegment(buf, isInbound, port = '?') {
+export function processSegment(buf: Buffer, isInbound: boolean, port: number | string = '?'): Buffer {
   const decrypted = xorCrypt(buf); // XOR-decrypt; XOR is self-inverse
   let modified    = false;
 
@@ -138,13 +104,12 @@ function processSegment(buf, isInbound, port = '?') {
     const payloadRaw   = decrypted.slice(payloadStart, payloadEnd);
 
     // Decode packet-level encrypted payloads for display only.
-    // Note: 0x3003 session handling has an additional inner auth transform in the
-    // server implementation that is not modeled separately here.
     const payloadDecrypted = decodeSessionPayload(
       decryptPayload(payloadRaw, cmd, isInbound),
       cmd,
       isInbound
     );
+
     // Check spoof rule before emitting so each packet carries its effective payload
     const rule = state.isSpoofingEnabled() ? state.getSpoofRule(cmd, isInbound) : null;
     let effectivePayload = payloadDecrypted;
@@ -196,37 +161,36 @@ function processSegment(buf, isInbound, port = '?') {
 
 // ─── Per-port proxy server ────────────────────────────────────────────────────
 
-function createProxyServer(port) {
+function createProxyServer(port: number): Promise<net.Server> {
   return new Promise(resolve => {
-    let upstream = null;
-    let attachedClient = null;
-    let keepAliveTimer = null;
+    let upstream: net.Socket | null = null;
+    let attachedClient: net.Socket | null = null;
+    let keepAliveTimer: NodeJS.Timeout | null = null;
     let nextClientSequence = 0;
-    const targetHost = _realIp || TARGET_HOST;
+    const targetHost = _realIp ?? TARGET_HOST;
     const _silent = new Set(['ECONNRESET', 'EPIPE', 'ECONNREFUSED', 'ETIMEDOUT']);
 
-    function publishStatus(extra = {}) {
+    function publishStatus(): void {
       state.setTcpStatus(port, {
         connected: !!(upstream && !upstream.destroyed && upstream.readyState === 'open'),
         attachedClient: !!(attachedClient && !attachedClient.destroyed),
-        ...extra,
       });
     }
 
-    function stopKeepAlive() {
+    function stopKeepAlive(): void {
       if (keepAliveTimer) {
         clearInterval(keepAliveTimer);
         keepAliveTimer = null;
       }
     }
 
-    function maybeStartKeepAlive() {
+    function maybeStartKeepAlive(): void {
       const canKeepAlive =
         state.isKeepUpstreamOpen() &&
-        upstream &&
+        upstream !== null &&
         !upstream.destroyed &&
         upstream.readyState === 'open' &&
-        !attachedClient;
+        attachedClient === null;
 
       if (!canKeepAlive) {
         stopKeepAlive();
@@ -237,10 +201,10 @@ function createProxyServer(port) {
       keepAliveTimer = setInterval(() => {
         if (
           !state.isKeepUpstreamOpen() ||
-          !upstream ||
+          upstream === null ||
           upstream.destroyed ||
           upstream.readyState !== 'open' ||
-          attachedClient
+          attachedClient !== null
         ) {
           stopKeepAlive();
           return;
@@ -249,13 +213,13 @@ function createProxyServer(port) {
         try {
           upstream.write(buildKeepAlivePacket(nextClientSequence));
           nextClientSequence = (nextClientSequence + 1) >>> 0;
-        } catch (_) {
+        } catch {
           stopKeepAlive();
         }
       }, KEEPALIVE_INTERVAL_MS);
     }
 
-    function cleanupUpstream() {
+    function cleanupUpstream(): void {
       stopKeepAlive();
       if (upstream) {
         upstream.removeAllListeners();
@@ -265,7 +229,7 @@ function createProxyServer(port) {
       publishStatus();
     }
 
-    function ensureUpstream() {
+    function ensureUpstream(): net.Socket {
       if (upstream && !upstream.destroyed) return upstream;
 
       upstream = net.createConnection({ host: targetHost, port });
@@ -277,14 +241,14 @@ function createProxyServer(port) {
         maybeStartKeepAlive();
       });
 
-      upstream.on('error', err => {
-        if (!_silent.has(err.code))
+      upstream.on('error', (err: NodeJS.ErrnoException) => {
+        if (!_silent.has(err.code ?? ''))
           console.error(`[TCP:${port}] Upstream error: ${err.message}`);
         if (attachedClient && !attachedClient.destroyed) attachedClient.destroy();
         cleanupUpstream();
       });
 
-      upstream.on('data', buf => {
+      upstream.on('data', (buf: Buffer) => {
         const out = processSegment(buf, false, port);
         if (attachedClient && !attachedClient.destroyed) attachedClient.write(out);
       });
@@ -299,7 +263,7 @@ function createProxyServer(port) {
       return upstream;
     }
 
-    state.emitter.on('keepUpstreamChanged', enabled => {
+    state.emitter.on('keepUpstreamChanged', (enabled: boolean) => {
       if (!enabled && upstream && !upstream.destroyed && !attachedClient) {
         cleanupUpstream();
         return;
@@ -320,14 +284,14 @@ function createProxyServer(port) {
       publishStatus();
       ensureUpstream();
 
-      localClient.on('error', err => {
-        if (!_silent.has(err.code))
+      localClient.on('error', (err: NodeJS.ErrnoException) => {
+        if (!_silent.has(err.code ?? ''))
           console.error(`[TCP:${port}] Client error: ${err.message}`);
         if (!state.isKeepUpstreamOpen()) cleanupUpstream();
       });
 
       // Client → Server (inbound = true)
-      localClient.on('data', buf => {
+      localClient.on('data', (buf: Buffer) => {
         const lastSequence = parseLastSequence(buf);
         if (lastSequence !== null) nextClientSequence = (lastSequence + 1) >>> 0;
         const out = processSegment(buf, true, port);
@@ -343,7 +307,7 @@ function createProxyServer(port) {
       });
     });
 
-    server.on('error', err => {
+    server.on('error', (err: Error) => {
       console.error(`[TCP:${port}] Server error: ${err.message}`);
     });
 
@@ -357,12 +321,11 @@ function createProxyServer(port) {
 
 // ─── Public API ───────────────────────────────────────────────────────────────
 
-async function startTcpProxy() {
+async function startTcpProxy(): Promise<net.Server[]> {
   await resolveServerIp();
   const servers = await Promise.all(GAME_PORTS.map(createProxyServer));
   console.log(`[TCP] All ${GAME_PORTS.length} proxy servers running`);
   return servers;
 }
 
-module.exports = startTcpProxy;
-module.exports.processSegment = processSegment;
+export default startTcpProxy;

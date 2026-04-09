@@ -1,4 +1,3 @@
-'use strict';
 // MGO2 SCANNER — entry point
 //
 // Starts:
@@ -7,21 +6,22 @@
 //   - TCP proxy     (ports 5731, 5732, 5733, 5734, 5738)
 //   - Web UI        (http://127.0.0.1:8080 — Dear ImGui via @mori2003/jsimgui + WebGL2)
 //
-// Run with: node src/main.js
+// Run with: tsx src/main.ts
 // Run as Administrator for ports 53 and 80.
 
-const startDnsServer  = require('./dns-server.js');
-const startHttpProxy  = require('./http-proxy.js');
-const startTcpProxy   = require('./tcp-proxy.js');
-const startWebServer  = require('./web-server.js');
+import { exec } from 'node:child_process';
+import startDnsServer  from './dns-server.js';
+import startHttpProxy  from './http-proxy.js';
+import startTcpProxy   from './tcp-proxy.js';
+import startWebServer  from './web-server.js';
 
 const DISABLE_DNS = process.env.DISABLE_DNS === 'true' || process.env.DISABLE_DNS === '1';
 
-async function main() {
+async function main(): Promise<void> {
   if (DISABLE_DNS) console.log('[main] DNS server disabled via DISABLE_DNS');
 
   const tasks = [
-    DISABLE_DNS ? Promise.resolve() : startDnsServer(),
+    DISABLE_DNS ? Promise.resolve(undefined) : startDnsServer(),
     startHttpProxy(),
     startTcpProxy(),
     startWebServer(),
@@ -33,13 +33,12 @@ async function main() {
   for (let i = 0; i < labels.length; i++) {
     if (DISABLE_DNS && i === 0) continue;
     if (results[i].status === 'rejected') {
-      console.warn(`[main] ${labels[i]} failed: ${results[i].reason.message}`);
+      console.warn(`[main] ${labels[i]} failed: ${(results[i] as PromiseRejectedResult).reason.message}`);
     }
   }
 
   // Open the GUI in the default browser automatically
   if (results[3].status === 'fulfilled') {
-    const { exec } = require('child_process');
     exec('start http://127.0.0.1:8080');
   }
 }

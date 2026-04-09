@@ -1,4 +1,3 @@
-'use strict';
 // DNS server with selective domain overrides.
 //
 // Hard overrides (per spec):
@@ -7,32 +6,28 @@
 //
 // All other queries are forwarded to upstream DNS (8.8.8.8).
 //
-// Requires: npm install dns-packet
 // Note: binding port 53 requires administrator/root privileges.
 
-const dgram     = require('dgram');
-const dnsPacket = require('dns-packet');
+import dgram from 'node:dgram';
+import * as dnsPacket from 'dns-packet';
 
 const DNS_PORT    = 53;
-const UPSTREAM_IP   = process.env.DNS_UPSTREAM_IP   || '8.8.8.8';
-const UPSTREAM_PORT = parseInt(process.env.DNS_UPSTREAM_PORT || '53', 10);
+const UPSTREAM_IP   = process.env.DNS_UPSTREAM_IP   ?? '8.8.8.8';
+const UPSTREAM_PORT = parseInt(process.env.DNS_UPSTREAM_PORT ?? '53', 10);
 
-const OVERRIDE_IP = process.env.OVERRIDE_IP || '0.0.0.0';
+const OVERRIDE_IP = process.env.OVERRIDE_IP ?? '0.0.0.0';
 
 // Domains that we intercept
-const OVERRIDES = {
+const OVERRIDES: Record<string, string> = {
   'mgo2pc.com':      OVERRIDE_IP,
   'game.mgo2pc.com': OVERRIDE_IP,
 };
 
-// Pending upstream queries: id → { socket, rinfo, timer }
-const _pending = new Map();
-
-function startDnsServer() {
+function startDnsServer(): Promise<dgram.Socket> {
   return new Promise((resolve, reject) => {
     const server = dgram.createSocket('udp4');
 
-    server.on('error', err => {
+    server.on('error', (err: NodeJS.ErrnoException) => {
       if (err.code === 'EADDRINUSE') {
         console.error('[DNS] Port 53 already in use — is another DNS running?');
       } else if (err.code === 'EACCES') {
@@ -43,15 +38,15 @@ function startDnsServer() {
       reject(err);
     });
 
-    server.on('message', (msg, rinfo) => {
-      let query;
+    server.on('message', (msg: Buffer, rinfo: dgram.RemoteInfo) => {
+      let query: dnsPacket.Packet;
       try {
         query = dnsPacket.decode(msg);
       } catch {
         return; // Malformed DNS packet — ignore
       }
 
-      if (!query || !query.questions || query.questions.length === 0) return;
+      if (!query.questions || query.questions.length === 0) return;
 
       const q = query.questions[0];
 
@@ -60,11 +55,11 @@ function startDnsServer() {
         const ip = OVERRIDES[q.name.toLowerCase()];
         console.log(`[DNS] Override: ${q.name} → ${ip}`);
 
-        let resp;
+        let resp: Buffer;
         try {
           resp = dnsPacket.encode({
             type:  'response',
-            id:    query.id,
+            id:    query.id ?? 0,
             flags: dnsPacket.AUTHORITATIVE_ANSWER,
             questions: query.questions,
             answers: [{
@@ -76,7 +71,7 @@ function startDnsServer() {
             }],
           });
         } catch (e) {
-          console.error('[DNS] Encode error:', e.message);
+          console.error('[DNS] Encode error:', (e as Error).message);
           return;
         }
 
@@ -85,7 +80,7 @@ function startDnsServer() {
       }
 
       // Forward to upstream
-      forwardToUpstream(server, msg, rinfo, query.id);
+      forwardToUpstream(server, msg, rinfo, query.id ?? 0);
     });
 
     server.bind(DNS_PORT, '0.0.0.0', () => {
@@ -95,7 +90,12 @@ function startDnsServer() {
   });
 }
 
-function forwardToUpstream(server, msg, clientRinfo, queryId) {
+function forwardToUpstream(
+  server: dgram.Socket,
+  msg: Buffer,
+  clientRinfo: dgram.RemoteInfo,
+  queryId: number
+): void {
   const upstream = dgram.createSocket('udp4');
   let answered = false;
 
@@ -106,14 +106,14 @@ function forwardToUpstream(server, msg, clientRinfo, queryId) {
     }
   }, 3000);
 
-  upstream.on('message', reply => {
+  upstream.on('message', (reply: Buffer) => {
     answered = true;
     clearTimeout(timer);
     upstream.close();
     server.send(reply, clientRinfo.port, clientRinfo.address);
   });
 
-  upstream.on('error', err => {
+  upstream.on('error', (err: Error) => {
     clearTimeout(timer);
     upstream.close();
     console.error('[DNS] Upstream error:', err.message);
@@ -122,4 +122,4 @@ function forwardToUpstream(server, msg, clientRinfo, queryId) {
   upstream.send(msg, UPSTREAM_PORT, UPSTREAM_IP);
 }
 
-module.exports = startDnsServer;
+export default startDnsServer;

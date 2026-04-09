@@ -2,15 +2,22 @@
   "name": "mgo2-foxdie",
   "version": "1.0.0",
   "description": "MGO2 Network Tool - DNS Interception, HTTP Proxy, TCP Proxy with Dear ImGui",
-  "main": "src/main.js",
+  "main": "src/main.ts",
   "scripts": {
-    "start": "node src/main.js",
-    "dns": "node src/dns-standalone.js",
-    "test": "node --test"
+    "start": "tsx src/main.ts",
+    "dns": "tsx src/dns-standalone.ts",
+    "test": "tsx --test src/tcp-proxy.test.ts",
+    "typecheck": "tsc --noEmit"
   },
   "dependencies": {
     "dns-packet": "^5.6.1",
     "@mori2003/jsimgui": "^0.13.0",
     "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.0.0",
+    "tsx": "^4.0.0",
+    "@types/node": "^20.0.0",
+    "@types/ws": "^8.0.0"
   }
 }

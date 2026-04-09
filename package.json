@@ -2,6 +2,7 @@
   "name": "mgo2-foxdie",
   "version": "1.0.0",
   "description": "MGO2 Network Tool - DNS Interception, HTTP Proxy, TCP Proxy with Dear ImGui",
+  "type": "module",
   "main": "src/main.ts",
   "scripts": {
     "start": "tsx src/main.ts",

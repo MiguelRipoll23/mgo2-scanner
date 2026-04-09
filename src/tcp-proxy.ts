@@ -14,7 +14,7 @@
 
 import net from 'node:net';
 import dns from 'node:dns';
-import state from './state';
+import state from './state.js';
 import {
   xorCrypt,
   decryptPayload,
@@ -22,7 +22,7 @@ import {
   decodeSessionPayload,
   encodeSessionPayload,
   computePacketChecksum,
-} from './crypto';
+} from './crypto.js';
 
 // Game ports — from decode-tcp.ts TARGET_PORTS
 const GAME_PORTS    = [5731, 5732, 5733, 5735, 5737, 5738, 5739];

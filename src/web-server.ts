@@ -7,9 +7,12 @@
 import http from 'node:http';
 import path from 'node:path';
 import fs from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import { WebSocketServer, WebSocket, type RawData } from 'ws';
-import state from './state';
-import type { Packet, SpoofRule, ExcludedRule, TcpStatus } from './state';
+import state from './state.js';
+import type { Packet, SpoofRule, ExcludedRule, TcpStatus } from './state.js';
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 const WEB_PORT   = 8080;
 const PUBLIC_DIR = path.join(__dirname, '..', 'public');

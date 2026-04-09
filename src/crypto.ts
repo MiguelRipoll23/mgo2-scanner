@@ -11,8 +11,8 @@ import {
   XOR_KEY_BYTES as XOR_KEY,
   XOR_SESSION_ID_BYTES,
   HMAC_MD5_KEY as HMAC_MD5_KEY_BYTES,
-} from './crypto-keys-constants';
-import { BLOWFISH_KEY_VIEW, BLOWFISH_AUTH_KEY_VIEW } from './blowfish-key';
+} from './crypto-keys-constants.js';
+import { BLOWFISH_KEY_VIEW, BLOWFISH_AUTH_KEY_VIEW } from './blowfish-key.js';
 
 export { XOR_KEY, XOR_SESSION_ID_BYTES };
 

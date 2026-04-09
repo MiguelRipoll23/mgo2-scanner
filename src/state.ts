@@ -1,6 +1,9 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { EventEmitter } from 'node:events';
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 export interface Packet {
   cmd: number;

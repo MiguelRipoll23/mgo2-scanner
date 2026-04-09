@@ -10,10 +10,10 @@
 // Run as Administrator for ports 53 and 80.
 
 import { exec } from 'node:child_process';
-import startDnsServer  from './dns-server';
-import startHttpProxy  from './http-proxy';
-import startTcpProxy   from './tcp-proxy';
-import startWebServer  from './web-server';
+import startDnsServer  from './dns-server.js';
+import startHttpProxy  from './http-proxy.js';
+import startTcpProxy   from './tcp-proxy.js';
+import startWebServer  from './web-server.js';
 
 const DISABLE_DNS = process.env.DISABLE_DNS === 'true' || process.env.DISABLE_DNS === '1';
 

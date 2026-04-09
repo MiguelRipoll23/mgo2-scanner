@@ -1,4 +1,4 @@
-import { BLOWFISH_KEY_PACKET, BLOWFISH_KEY_AUTH } from './crypto-keys-constants';
+import { BLOWFISH_KEY_PACKET, BLOWFISH_KEY_AUTH } from './crypto-keys-constants.js';
 
 const BLOWFISH_KEY_VIEW = new DataView(
   BLOWFISH_KEY_PACKET.buffer,

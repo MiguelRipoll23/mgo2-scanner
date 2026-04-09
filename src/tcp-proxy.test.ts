@@ -1,8 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import state from './state';
-import type { SpoofRule, Packet } from './state';
+import state from './state.js';
+import type { SpoofRule, Packet } from './state.js';
 import {
   xorCrypt,
   decryptPayload,
@@ -10,8 +10,8 @@ import {
   decodeSessionPayload,
   encodeSessionPayload,
   computePacketChecksum,
-} from './crypto';
-import { processSegment } from './tcp-proxy';
+} from './crypto.js';
+import { processSegment } from './tcp-proxy.js';
 
 const HEADER_SIZE = 24;
 const XOR_ONLY_CMD = 0x4440;

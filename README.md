@@ -41,8 +41,11 @@ docker run -d \
   -e DNS_UPSTREAM_IP=8.8.8.8 \
   -e DNS_UPSTREAM_PORT=53 \
   -e DISABLE_DNS=false \
+  -v mgo2-scanner-rules:/app \
   ghcr.io/miguelripoll23/mgo2-scanner:main
 ```
+
+The `-v mgo2-scanner-rules:/app` flag mounts a named Docker volume so that `test-rules.json` (and any other files written to `/app`) persist across `docker run` invocations. Without it, spoofing rules are kept only in memory and are lost whenever the container is replaced.
 
 ### Environment variables
 

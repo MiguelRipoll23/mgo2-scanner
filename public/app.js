@@ -684,7 +684,18 @@ function syncInspectorFields(buf, dv, n) {
     inspectorEd.cursorKey = cursorKey;
     const scanLimit = Math.min(CSTRING_SCAN_LIMIT, n);
     const nullAt = buf.slice(0, scanLimit).indexOf(0);
-    inspectorEd.cStringLen = nullAt === -1 ? scanLimit : nullAt + 1;
+    if (nullAt === -1) {
+      inspectorEd.cStringLen = scanLimit;
+    } else if (nullAt === 0) {
+      // First byte is already null (field was cleared). Measure the run of
+      // consecutive nulls so the field stays editable at its original width
+      // rather than collapsing to an un-typeable 1-byte slot.
+      let runEnd = 1;
+      while (runEnd < scanLimit && buf[runEnd] === 0) runEnd++;
+      inspectorEd.cStringLen = runEnd;
+    } else {
+      inspectorEd.cStringLen = nullAt + 1;
+    }
     inspectorEd.fields['cstring'] = decodeCString(buf.slice(0, scanLimit));
   }
 

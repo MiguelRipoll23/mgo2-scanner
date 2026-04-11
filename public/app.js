@@ -570,18 +570,28 @@ function buildCab(files) {
 function exportAllPackets() {
   if (packets.length === 0) return;
 
-  const records = packets.map(pkt => ({
-    timestamp: pkt.timestamp,
-    direction: pkt.isInbound ? 'IN' : 'OUT',
-    cmdId:     cmdHex(pkt.cmd),
-    cmdName:   CMD_NAMES[pkt.cmd] || null,
-    // Full decrypted packet: 24-byte header + plaintext payload (hex-encoded).
-    // pkt.packet is null when the backend did not capture the header bytes.
-    packet:    pkt.packet || null,
-  }));
+  function csvField(value) {
+    const s = value == null ? '' : String(value);
+    return s.includes(',') || s.includes('"') || s.includes('\n')
+      ? `"${s.replace(/"/g, '""')}"` : s;
+  }
 
-  const jsonBytes = new TextEncoder().encode(JSON.stringify(records, null, 2));
-  const cab  = buildCab([{ name: 'capture.json', data: jsonBytes }]);
+  const rows = [['Timestamp', 'Direction', 'Command ID', 'Command Name', 'Packet']];
+  for (const pkt of packets) {
+    rows.push([
+      pkt.timestamp,
+      pkt.isInbound ? 'IN' : 'OUT',
+      cmdHex(pkt.cmd),
+      CMD_NAMES[pkt.cmd] || '',
+      // Full decrypted packet: 24-byte header + plaintext payload (hex-encoded).
+      // pkt.packet is null when the backend did not capture the header bytes.
+      pkt.packet || '',
+    ]);
+  }
+  const csv = rows.map(r => r.map(csvField).join(',')).join('\r\n');
+
+  const csvBytes = new TextEncoder().encode(csv);
+  const cab  = buildCab([{ name: 'capture.csv', data: csvBytes }]);
   const blob = new Blob([cab], { type: 'application/octet-stream' });
   const url  = URL.createObjectURL(blob);
   const link = document.createElement('a');

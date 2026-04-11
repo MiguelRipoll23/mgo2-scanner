@@ -3,7 +3,7 @@ FROM node:24.14.1-alpine
 WORKDIR /app
 
 COPY package*.json ./
-RUN npm ci --omit=dev
+RUN npm ci
 
 COPY . .
 
@@ -17,4 +17,4 @@ ENV LISTENING_IP=0.0.0.0
 ENV DNS_UPSTREAM_IP=8.8.8.8
 ENV DNS_UPSTREAM_PORT=53
 
-CMD ["node", "src/main.js"]
+CMD ["npx", "tsx", "src/main.ts"]

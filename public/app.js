@@ -1,6 +1,6 @@
 // MGO2 Scanner — Dear ImGui frontend
 // Uses @mori2003/jsimgui (WebGL2 backend) served from /jsimgui/mod.js
-// Communicates with the Node.js backend over WebSocket at ws://<LISTENING_IP>:8080/ws
+// Communicates with the Node.js backend over WebSocket at ws://<host>:<port>/ws
 
 import { ImGui, ImGuiImplWeb, ImVec2 } from '/jsimgui/mod.js';
 const IMGUI_COL_TEXT = ImGui.Col?.Text ?? 0;
@@ -277,7 +277,7 @@ const TNF_DefaultOpen    = 32; // ImGuiTreeNodeFlags_DefaultOpen
 
 // ─── WebSocket ────────────────────────────────────────────────────────────────
 function connectWS() {
-  ws = new WebSocket(`ws://${window.location.hostname}:8080/ws`);
+  ws = new WebSocket(`ws://${window.location.hostname}:${window.location.port}/ws`);
   ws.onopen  = () => { wsReady = true;  setStatus('connected'); };
   ws.onclose = () => {
     wsReady = false;

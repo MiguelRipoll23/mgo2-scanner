@@ -566,7 +566,7 @@ function buildCab(files) {
   return cab;
 }
 
-// ─── Export all captured packets as a .cab archive ───────────────────────────
+// ─── Export all captured packets as a CSV file ───────────────────────────────
 function exportAllPackets() {
   if (packets.length === 0) return;
 
@@ -590,13 +590,11 @@ function exportAllPackets() {
   }
   const csv = rows.map(r => r.map(csvField).join(',')).join('\r\n');
 
-  const csvBytes = new TextEncoder().encode(csv);
-  const cab  = buildCab([{ name: 'capture.csv', data: csvBytes }]);
-  const blob = new Blob([cab], { type: 'application/octet-stream' });
+  const blob = new Blob([csv], { type: 'text/csv; charset=utf-8' });
   const url  = URL.createObjectURL(blob);
   const link = document.createElement('a');
   link.href     = url;
-  link.download = `capture-${fmtDatetime()}.cab`;
+  link.download = `capture-${fmtDatetime()}.csv`;
   link.click();
   URL.revokeObjectURL(url);
 }

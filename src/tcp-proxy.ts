@@ -271,6 +271,11 @@ function createProxyServer(port: number): Promise<net.Server> {
       if (enabled) maybeStartKeepAlive();
     });
 
+    state.emitter.on('forceCloseUpstream', () => {
+      if (attachedClient && !attachedClient.destroyed) attachedClient.destroy();
+      cleanupUpstream();
+    });
+
     const server = net.createServer(localClient => {
       if (attachedClient && !attachedClient.destroyed) {
         console.warn(`[TCP:${port}] Rejecting extra client while port already attached`);

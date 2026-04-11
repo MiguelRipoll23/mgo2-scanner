@@ -167,6 +167,8 @@ function startWebServer(): Promise<http.Server> {
           }
         } else if (m.type === 'setKeepUpstreamOpen') {
           if (typeof m.enabled === 'boolean') state.setKeepUpstreamOpen(m.enabled);
+        } else if (m.type === 'closeUpstreamConnections') {
+          state.forceCloseUpstream();
         }
       });
 

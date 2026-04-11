@@ -118,6 +118,9 @@ const CMD_NAMES = {
   0x4840: 'GET_MESSAGE_CONTENTS',          0x4841: 'GET_MESSAGE_CONTENTS_RESP',
   0x4860: 'ADD_SENT_MESSAGE',              0x4861: 'ADD_SENT_MESSAGE_RESP',
 
+  // Game server — flash news
+  0x4a50: 'FLASH_NEWS',
+
   // Game server — lobby info
   0x4900: 'GET_GAME_LOBBY_INFO',
   0x4901: 'GET_GAME_LOBBY_INFO_START',     0x4902: 'GET_GAME_LOBBY_INFO_ITEM',
@@ -215,7 +218,6 @@ const tcpStatuses = [];
 
 let autoScroll  = false;
 let selectedIdx = -1;
-let packetListScrollY = 0;
 
 // Current-packet detail (updated on selection change)
 const detail = {
@@ -252,6 +254,8 @@ let pendingSpoofingEnabled = null;
 let pendingExcludedRule = null;
 let showConnectionStateModal = false;
 let pendingKeepUpstreamOpen = null;
+let pendingForceCloseUpstream = false;
+let showDisableKeepUpstreamConfirm = false;
 let editingRule = null;              // { cmd, isInbound, payloadHex } — rule editing mode
 let pendingDeleteConfirmRule = null; // rule pending delete confirmation
 let showClearRulesConfirm = false;  // clear-all-rules confirmation
@@ -482,10 +486,12 @@ function copyCurrentPacket() {
   const compact = currentPlainPacketCompact();
   if (!compact) return;
   const text = compact.toUpperCase();
-  if (navigator.clipboard?.writeText) {
-    navigator.clipboard.writeText(text).catch(() => ImGui.SetClipboardText(text));
-    return;
-  }
+  try {
+    if (navigator.clipboard?.writeText) {
+      navigator.clipboard.writeText(text);
+      return;
+    }
+  } catch {}
   ImGui.SetClipboardText(text);
 }
 
@@ -504,10 +510,12 @@ function exportCurrentRule() {
 function copyCurrentRule() {
   if (!editingRule || !detail.compact) return;
   const text = detail.compact.toUpperCase();
-  if (navigator.clipboard?.writeText) {
-    navigator.clipboard.writeText(text).catch(() => ImGui.SetClipboardText(text));
-    return;
-  }
+  try {
+    if (navigator.clipboard?.writeText) {
+      navigator.clipboard.writeText(text);
+      return;
+    }
+  } catch {}
   ImGui.SetClipboardText(text);
 }
 
@@ -1113,8 +1121,6 @@ function renderPacketList() {
     ImGui.TableSetupColumn('Name', CF_WidthStretch,  0);
     ImGui.TableHeadersRow();
 
-    const scrollYBeforeRows = ImGui.GetScrollY();
-
     for (let i = 0; i < packets.length; i++) {
       const pkt = packets[i];
       ImGui.PushStyleColor(0, pkt.isInbound ? COL_GREEN : COL_PURPLE);
@@ -1132,13 +1138,7 @@ function renderPacketList() {
       ImGui.PopStyleColor(1);
     }
 
-    if (autoScroll) {
-      ImGui.SetScrollHereY(1.0);
-      packetListScrollY = ImGui.GetScrollMaxY();
-    } else {
-      packetListScrollY = scrollYBeforeRows;
-      ImGui.SetScrollY(packetListScrollY);
-    }
+    if (autoScroll) ImGui.SetScrollHereY(1.0);
     ImGui.EndTable();
   } finally {
     ImGui.EndChild();
@@ -1319,6 +1319,27 @@ function renderDeleteRuleConfirmModal(vpW, vpH) {
   }
 }
 
+// ─── Disable keep upstream confirmation modal ─────────────────────────────────
+function renderDisableKeepUpstreamConfirmModal(vpW, vpH) {
+  if (!showDisableKeepUpstreamConfirm) return;
+  ImGui.SetNextWindowPos(new ImVec2(Math.floor((vpW - 340) * 0.5), Math.floor((vpH - 90) * 0.5)), 4);
+  ImGui.SetNextWindowSize(new ImVec2(340, 90), 4);
+  ImGui.Begin('Close upstream connections', null, WF_NoResize);
+  try {
+    ImGui.TextWrapped('Active upstream connections will be closed. Continue?');
+    if (ImGui.Button('Close connections')) {
+      keepUpstreamOpen = false;
+      pendingKeepUpstreamOpen = false;
+      pendingForceCloseUpstream = true;
+      showDisableKeepUpstreamConfirm = false;
+    }
+    ImGui.SameLine(0, 8);
+    if (ImGui.Button('Cancel')) showDisableKeepUpstreamConfirm = false;
+  } finally {
+    ImGui.End();
+  }
+}
+
 // ─── Connection State modal ───────────────────────────────────────────────────
 function renderConnectionStateModal(vpW, vpH) {
   if (!showConnectionStateModal) return;
@@ -1361,8 +1382,12 @@ function renderMainWindow(vpW, vpH) {
         if (ImGui.BeginMenu('View')) {
           if (ImGui.MenuItem('Auto-scroll', '', autoScroll)) autoScroll = !autoScroll;
           if (ImGui.MenuItem('Keep upstream open', '', keepUpstreamOpen)) {
-            keepUpstreamOpen = !keepUpstreamOpen;
-            pendingKeepUpstreamOpen = keepUpstreamOpen;
+            if (keepUpstreamOpen && tcpStatuses.some(s => s.connected)) {
+              showDisableKeepUpstreamConfirm = true;
+            } else {
+              keepUpstreamOpen = !keepUpstreamOpen;
+              pendingKeepUpstreamOpen = keepUpstreamOpen;
+            }
           }
           ImGui.Separator();
           if (ImGui.MenuItem('Connection State')) showConnectionStateModal = true;
@@ -1409,6 +1434,7 @@ function renderMainWindow(vpW, vpH) {
   renderSearchWindow(vpW, vpH);
   renderClearRulesConfirmModal(vpW, vpH);
   renderDeleteRuleConfirmModal(vpW, vpH);
+  renderDisableKeepUpstreamConfirmModal(vpW, vpH);
   renderConnectionStateModal(vpW, vpH);
 }
 
@@ -1437,6 +1463,10 @@ function frame() {
   if (pendingKeepUpstreamOpen !== null) {
     sendWS({ type: 'setKeepUpstreamOpen', enabled: pendingKeepUpstreamOpen });
     pendingKeepUpstreamOpen = null;
+  }
+  if (pendingForceCloseUpstream) {
+    sendWS({ type: 'closeUpstreamConnections' });
+    pendingForceCloseUpstream = false;
   }
   if (pendingExcludedRule) {
     sendWS({ type: 'setExcludedRule', ...pendingExcludedRule });

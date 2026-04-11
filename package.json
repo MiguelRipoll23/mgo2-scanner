@@ -6,7 +6,7 @@
   "main": "src/main.ts",
   "scripts": {
     "start": "tsx src/main.ts",
-    "dns": "tsx src/dns-standalone.ts",
+    "dns": "tsx --env-file=.env src/dns-standalone.ts",
     "test": "tsx --test src/tcp-proxy.test.ts",
     "typecheck": "tsc --noEmit"
   },

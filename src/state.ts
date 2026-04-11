@@ -87,6 +87,10 @@ function setKeepUpstreamOpen(enabled: boolean): void {
   emitter.emit('keepUpstreamChanged', _keepUpstreamOpen);
 }
 
+function forceCloseUpstream(): void {
+  emitter.emit('forceCloseUpstream');
+}
+
 function setExcludedRule(cmd: number, isInbound: boolean, enabled: boolean): void {
   const key = _key(cmd, isInbound);
   if (enabled) _excluded.set(key, { cmd, isInbound });
@@ -162,6 +166,7 @@ const state = {
   isKeepUpstreamOpen,
   setSpoofingEnabled,
   setKeepUpstreamOpen,
+  forceCloseUpstream,
   setExcludedRule,
   setTcpStatus,
   getTcpStatuses,

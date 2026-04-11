@@ -37,7 +37,7 @@ docker run -d \
   -p 5731-5734:5731-5734 \
   -p 5738-5739:5738-5739 \
   -p 8080:8080 \
-  -e OVERRIDE_IP=0.0.0.0 \
+  -e LISTENING_IP=0.0.0.0 \
   -e DNS_UPSTREAM_IP=8.8.8.8 \
   -e DNS_UPSTREAM_PORT=53 \
   -e DISABLE_DNS=false \
@@ -48,7 +48,7 @@ docker run -d \
 
 | Variable            | Default   | Description                                                  |
 |---------------------|-----------|--------------------------------------------------------------|
-| `OVERRIDE_IP`       | `0.0.0.0` | IP returned for `mgo2pc.com` and `game.mgo2pc.com` overrides |
+| `LISTENING_IP`      | `0.0.0.0` | IP returned for `mgo2pc.com` and `game.mgo2pc.com` overrides |
 | `DNS_UPSTREAM_IP`   | `8.8.8.8` | Upstream DNS server IP for forwarded queries                 |
 | `DNS_UPSTREAM_PORT` | `53`      | Upstream DNS server port                                     |
 | `DISABLE_DNS`       | `false`   | Set to `true` to skip starting the DNS server                |

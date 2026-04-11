@@ -350,6 +350,11 @@ function replaceBytesAtCursor(nextBytes) {
   const full = compactToBytes(detail.compact);
   const off = detail.cursorByte;
   if (off + nextBytes.length > full.length) return false;
+  let changed = false;
+  for (let i = 0; i < nextBytes.length; i++) {
+    if (full[off + i] !== nextBytes[i]) { changed = true; break; }
+  }
+  if (!changed) return false;
   full.set(nextBytes, off);
   detail.compact = bytesToCompact(full);
   return true;
@@ -460,6 +465,130 @@ function restoreCurrentPayload() {
   detail.compact = detail.original;
   inspectorEd.key = ''; inspectorEd.cursorKey = '';
   queueSpoofSync();
+}
+
+// ─── CAB archive builder (uncompressed, CFHEADER format) ─────────────────────
+// Generates a minimal but structurally valid Cabinet (.cab) file containing
+// one or more uncompressed files, so any standard cabinet tool can open it.
+function buildCab(files) {
+  const HEADER_SZ  = 36;
+  const FOLDER_SZ  = 8;
+  const MAX_BLOCK  = 32768; // max uncompressed bytes per CFDATA block
+  const enc        = new TextEncoder();
+
+  // ── Concatenate all file data ────────────────────────────────────────────
+  let totalBytes = 0;
+  for (const f of files) totalBytes += f.data.length;
+  const allData = new Uint8Array(totalBytes);
+  let wpos = 0;
+  for (const f of files) { allData.set(f.data, wpos); wpos += f.data.length; }
+
+  // ── Split into CFDATA blocks (≤ MAX_BLOCK each) ──────────────────────────
+  const dataBlocks = [];
+  for (let i = 0; i < allData.length; i += MAX_BLOCK)
+    dataBlocks.push(allData.slice(i, Math.min(i + MAX_BLOCK, allData.length)));
+  if (dataBlocks.length === 0) dataBlocks.push(new Uint8Array(0));
+
+  // ── Build CFFILE fixed+name entries ──────────────────────────────────────
+  const now      = new Date();
+  const dosDate  = (((now.getFullYear() - 1980) & 0x7f) << 9)
+                 | (((now.getMonth() + 1)        & 0x0f) << 5)
+                 |  (now.getDate()               & 0x1f);
+  const dosTime  = ((now.getHours()              & 0x1f) << 11)
+                 | ((now.getMinutes()             & 0x3f) << 5)
+                 |  (Math.floor(now.getSeconds() / 2)    & 0x1f);
+
+  const cffileEntries = [];
+  let uoff = 0;
+  for (const f of files) {
+    const nameBytes = enc.encode(f.name);
+    const entry = new Uint8Array(16 + nameBytes.length + 1); // +1 for NUL
+    const dv = new DataView(entry.buffer);
+    dv.setUint32( 0, f.data.length, true); // cbFile
+    dv.setUint32( 4, uoff,          true); // uoffFolderStart
+    dv.setUint16( 8, 0,             true); // iFolder
+    dv.setUint16(10, dosDate,       true); // date
+    dv.setUint16(12, dosTime,       true); // time
+    dv.setUint16(14, 0x20,          true); // attribs: ATTR_ARCH
+    entry.set(nameBytes, 16);
+    cffileEntries.push(entry);
+    uoff += f.data.length;
+  }
+
+  // ── Build CFDATA block entries (8-byte header + payload) ─────────────────
+  const cfDataEntries = dataBlocks.map(block => {
+    const entry = new Uint8Array(8 + block.length);
+    const dv = new DataView(entry.buffer);
+    dv.setUint32(0, 0,            true); // csum (0 = not checksummed)
+    dv.setUint16(4, block.length, true); // cbData
+    dv.setUint16(6, block.length, true); // cbUncomp
+    entry.set(block, 8);
+    return entry;
+  });
+
+  // ── Compute byte offsets ─────────────────────────────────────────────────
+  const cffileSize       = cffileEntries.reduce((s, e) => s + e.length, 0);
+  const cfdataSize       = cfDataEntries.reduce((s, e) => s + e.length, 0);
+  const coffFirstFile    = HEADER_SZ + FOLDER_SZ;
+  const coffFolderData   = coffFirstFile + cffileSize;
+  const totalSize        = HEADER_SZ + FOLDER_SZ + cffileSize + cfdataSize;
+
+  // ── Assemble final buffer ────────────────────────────────────────────────
+  const cab = new Uint8Array(totalSize);
+  const hdv = new DataView(cab.buffer);
+
+  // CFHEADER
+  cab[0] = 0x4D; cab[1] = 0x53; cab[2] = 0x43; cab[3] = 0x46; // "MSCF"
+  hdv.setUint32( 4, 0,               true); // reserved1
+  hdv.setUint32( 8, totalSize,       true); // cbCabinet
+  hdv.setUint32(12, 0,               true); // reserved2
+  hdv.setUint32(16, coffFirstFile,   true); // coffFirstFileEntry
+  hdv.setUint32(20, 0,               true); // reserved3
+  cab[24] = 3; cab[25] = 1;                  // versionMinor, versionMajor
+  hdv.setUint16(26, 1,               true); // cFolders
+  hdv.setUint16(28, files.length,    true); // cFiles
+  hdv.setUint16(30, 0,               true); // flags
+  hdv.setUint16(32, 0,               true); // setID
+  hdv.setUint16(34, 0,               true); // iCabinet
+
+  // CFFOLDER
+  hdv.setUint32(HEADER_SZ,     coffFolderData,      true); // coffCabStart
+  hdv.setUint16(HEADER_SZ + 4, dataBlocks.length,   true); // cCFData
+  hdv.setUint16(HEADER_SZ + 6, 0,                   true); // typeCompress: none
+
+  // CFFILE entries
+  let p = coffFirstFile;
+  for (const e of cffileEntries) { cab.set(e, p); p += e.length; }
+
+  // CFDATA entries
+  for (const e of cfDataEntries) { cab.set(e, p); p += e.length; }
+
+  return cab;
+}
+
+// ─── Export all captured packets as a .cab archive ───────────────────────────
+function exportAllPackets() {
+  if (packets.length === 0) return;
+
+  const records = packets.map(pkt => ({
+    timestamp: pkt.timestamp,
+    direction: pkt.isInbound ? 'IN' : 'OUT',
+    cmdId:     cmdHex(pkt.cmd),
+    cmdName:   CMD_NAMES[pkt.cmd] || null,
+    // Full decrypted packet: 24-byte header + plaintext payload (hex-encoded).
+    // pkt.packet is null when the backend did not capture the header bytes.
+    packet:    pkt.packet || null,
+  }));
+
+  const jsonBytes = new TextEncoder().encode(JSON.stringify(records, null, 2));
+  const cab  = buildCab([{ name: 'capture.json', data: jsonBytes }]);
+  const blob = new Blob([cab], { type: 'application/octet-stream' });
+  const url  = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href     = url;
+  link.download = `capture-${fmtDatetime()}.cab`;
+  link.click();
+  URL.revokeObjectURL(url);
 }
 
 function fmtDatetime() {
@@ -672,16 +801,15 @@ function syncInspectorFields(buf, dv, n) {
   const cursorKey = `${detail.lastIdx}:${off}`;
   const key = `${cursorKey}:${detail.compact}`;
 
-  // Recalculate cstring state only when the cursor moves to a new position.
-  // - Cap the null search to CSTRING_SCAN_LIMIT bytes so we never treat a
-  //   distant null (from a different field) as our terminator and accidentally
-  //   clobber many bytes on write.
-  // - The cstring display value is also only refreshed here; between cursor
-  //   moves it keeps whatever the user last typed so jsimgui's InputText
-  //   internal cursor position is not reset on every keystroke.
-  const cursorMoved = inspectorEd.cursorKey !== cursorKey;
-  if (cursorMoved) {
-    inspectorEd.cursorKey = cursorKey;
+  // Recalculate cstring state only when the cursor BYTE OFFSET changes.
+  // Using only `off` (not `detail.lastIdx`) here means that switching between
+  // packet-view and rule-edit mode at the same byte offset does NOT reset the
+  // cstring display value — preventing an update loop where the mode switch
+  // caused by queueSpoofSync would overwrite the text the user just typed.
+  const cstringByteKey = String(off);
+  const cstringByteChanged = inspectorEd.cstringByteKey !== cstringByteKey;
+  if (cstringByteChanged) {
+    inspectorEd.cstringByteKey = cstringByteKey;
     const scanLimit = Math.min(CSTRING_SCAN_LIMIT, n);
     const nullAt = buf.slice(0, scanLimit).indexOf(0);
     if (nullAt === -1) {
@@ -698,6 +826,10 @@ function syncInspectorFields(buf, dv, n) {
     }
     inspectorEd.fields['cstring'] = decodeCString(buf.slice(0, scanLimit));
   }
+
+  // Also track the full cursorKey for the general field-refresh gate below.
+  const cursorMoved = inspectorEd.cursorKey !== cursorKey;
+  if (cursorMoved) inspectorEd.cursorKey = cursorKey;
 
   if (inspectorEd.key === key) return;
   inspectorEd.key = key;
@@ -1117,46 +1249,48 @@ function renderSpoofRulesSection() {
 // ─── LEFT panel — Packet list ─────────────────────────────────────────────────
 function renderPacketList() {
   if (!ImGui.BeginTabBar('##lp_tabs')) return;
-  if (!ImGui.BeginTabItem(`Packets (${packets.length})##lp_tab`)) {
-    ImGui.EndTabBar();
-    return;
-  }
-
-  ImGui.BeginChild('##packet_table_wrap', new ImVec2(0, -1), 0, 0);
   try {
-    const flags = TF_ScrollY | TF_Borders | TF_RowBg | TF_SizingFixedFit;
-    if (!ImGui.BeginTable('##pl', 3, flags, new ImVec2(0, -1))) return;
-    ImGui.TableSetupScrollFreeze(0, 1);
-    ImGui.TableSetupColumn('Dir',  CF_WidthFixed,   36);
-    ImGui.TableSetupColumn('ID',   CF_WidthFixed,   54);
-    ImGui.TableSetupColumn('Name', CF_WidthStretch,  0);
-    ImGui.TableHeadersRow();
+    if (!ImGui.BeginTabItem(`Packets (${packets.length})##lp_tab`)) return;
+    try {
+      // The table owns its own scroll region (TF_ScrollY). A BeginChild wrapper
+      // is intentionally omitted: nesting two scroll regions caused the visible
+      // area to jump by one frame whenever new packets were appended, producing
+      // a flicker even with auto-scroll disabled.
+      const flags = TF_ScrollY | TF_Borders | TF_RowBg | TF_SizingFixedFit;
+      if (ImGui.BeginTable('##pl', 3, flags, new ImVec2(0, -1))) {
+        try {
+          ImGui.TableSetupScrollFreeze(0, 1);
+          ImGui.TableSetupColumn('Dir',  CF_WidthFixed,   36);
+          ImGui.TableSetupColumn('ID',   CF_WidthFixed,   54);
+          ImGui.TableSetupColumn('Name', CF_WidthStretch,  0);
+          ImGui.TableHeadersRow();
 
-    for (let i = 0; i < packets.length; i++) {
-      const pkt = packets[i];
-      ImGui.PushStyleColor(0, pkt.isInbound ? COL_GREEN : COL_PURPLE);
+          for (let i = 0; i < packets.length; i++) {
+            const pkt = packets[i];
+            ImGui.PushStyleColor(0, pkt.isInbound ? COL_GREEN : COL_PURPLE);
+            ImGui.TableNextRow();
+            ImGui.TableSetColumnIndex(0);
+            if (ImGui.Selectable(
+              `${pkt.isInbound ? 'IN' : 'OUT'}##r${i}`,
+              selectedIdx === i,
+              SEL_SpanAllColumns
+            )) requestPacketSelection(i);
+            ImGui.TableSetColumnIndex(1); ImGui.Text(cmdHex(pkt.cmd));
+            ImGui.TableSetColumnIndex(2); ImGui.Text(CMD_NAMES[pkt.cmd] || '');
+            ImGui.PopStyleColor(1);
+          }
 
-      ImGui.TableNextRow();
-      ImGui.TableSetColumnIndex(0);
-      if (ImGui.Selectable(
-        `${pkt.isInbound ? 'IN' : 'OUT'}##r${i}`,
-        selectedIdx === i,
-        SEL_SpanAllColumns
-      )) requestPacketSelection(i);
-      ImGui.TableSetColumnIndex(1); ImGui.Text(cmdHex(pkt.cmd));
-      ImGui.TableSetColumnIndex(2); ImGui.Text(CMD_NAMES[pkt.cmd] || '');
-
-      ImGui.PopStyleColor(1);
+          if (autoScroll) ImGui.SetScrollHereY(1.0);
+        } finally {
+          ImGui.EndTable();
+        }
+      }
+    } finally {
+      ImGui.EndTabItem();
     }
-
-    if (autoScroll) ImGui.SetScrollHereY(1.0);
-    ImGui.EndTable();
   } finally {
-    ImGui.EndChild();
+    ImGui.EndTabBar();
   }
-
-  ImGui.EndTabItem();
-  ImGui.EndTabBar();
 }
 
 // ─── CENTER panel ─────────────────────────────────────────────────────────────
@@ -1415,6 +1549,10 @@ function renderMainWindow(vpW, vpH) {
           if (ImGui.MenuItem('Search value')) searchState.open = true;
           ImGui.EndMenu();
         }
+
+        ImGui.BeginDisabled(packets.length === 0);
+        if (ImGui.SmallButton('Export')) exportAllPackets();
+        ImGui.EndDisabled();
 
       } finally {
         ImGui.EndMenuBar();

@@ -8,7 +8,10 @@
     "start": "tsx src/main.ts",
     "dns": "tsx --env-file=.env src/dns-standalone.ts",
     "test": "tsx --test src/tcp-proxy.test.ts",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "typecheck:ui": "tsc --project tsconfig.ui.json",
+    "build:ui": "esbuild src/ui/main.ts --bundle --format=esm --outfile=public/app.js --external:/jsimgui/mod.js --platform=browser",
+    "dev:ui": "esbuild src/ui/main.ts --bundle --format=esm --outfile=public/app.js --external:/jsimgui/mod.js --platform=browser --watch"
   },
   "dependencies": {
     "dns-packet": "^5.6.1",
@@ -16,6 +19,7 @@
     "ws": "^8.18.0"
   },
   "devDependencies": {
+    "esbuild": "^0.24.0",
     "typescript": "^5.0.0",
     "tsx": "^4.0.0",
     "@types/node": "^20.0.0",

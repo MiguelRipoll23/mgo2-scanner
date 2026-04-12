@@ -1,624 +1,536 @@
-// MGO2 Scanner — Dear ImGui frontend
-// Uses @mori2003/jsimgui (WebGL2 backend) served from /jsimgui/mod.js
-// Communicates with the Node.js backend over WebSocket at ws://<host>:<port>/ws
+// src/ui/main.ts
+import { ImGuiImplWeb, ImGui as ImGui12 } from "/jsimgui/mod.js";
 
-import { ImGui, ImGuiImplWeb, ImVec2 } from '/jsimgui/mod.js';
-const IMGUI_COL_TEXT = ImGui.Col?.Text ?? 0;
-const IMGUI_COL_FRAME_BG = ImGui.Col?.FrameBg ?? 7;
-const IMGUI_COL_FRAME_BG_HOVERED = ImGui.Col?.FrameBgHovered ?? 8;
-const IMGUI_COL_FRAME_BG_ACTIVE = ImGui.Col?.FrameBgActive ?? 9;
-const IMGUI_COL_BUTTON = ImGui.Col?.Button ?? 21;
-const IMGUI_COL_BUTTON_HOVERED = ImGui.Col?.ButtonHovered ?? 22;
-const IMGUI_COL_BUTTON_ACTIVE = ImGui.Col?.ButtonActive ?? 23;
+// src/ui/state.ts
+var state = {
+  // ── Core data ────────────────────────────────────────────────────────────────
+  packets: [],
+  spoofRules: [],
+  excludedRules: [],
+  tcpStatuses: [],
+  // ── WebSocket ────────────────────────────────────────────────────────────────
+  ws: null,
+  wsReady: false,
+  // ── App state ────────────────────────────────────────────────────────────────
+  spoofingEnabled: false,
+  keepUpstreamOpen: false,
+  autoScroll: false,
+  selectedIdx: -1,
+  // ── Current-packet detail (updated on selection change) ───────────────────
+  detail: {
+    compact: "",
+    // current payload hex (may be edited)
+    original: "",
+    // as-captured payload hex — never changed by edits
+    packet: "",
+    // full packet header + plaintext payload hex
+    lastIdx: -2,
+    cursorByte: 0
+  },
+  // ── Data-inspector editor state ──────────────────────────────────────────
+  inspectorEd: {
+    key: "",
+    cursorKey: "",
+    cStringLen: 1,
+    cstringByteKey: "",
+    fields: {}
+  },
+  // ── Search ───────────────────────────────────────────────────────────────
+  searchState: {
+    open: false,
+    type: "string",
+    value: "",
+    results: [],
+    index: -1,
+    direction: "both",
+    selectedPacketKey: ""
+  },
+  // ── Deferred WS sends (processed after ImGui calls) ──────────────────────
+  pendingDelete: null,
+  pendingSave: null,
+  pendingClearRules: false,
+  pendingSpoofingEnabled: null,
+  pendingExcludedRule: null,
+  pendingKeepUpstreamOpen: null,
+  pendingForceCloseUpstream: false,
+  // ── UI visibility flags ───────────────────────────────────────────────────
+  showConnectionStateModal: false,
+  showDisableKeepUpstreamConfirm: false,
+  showClearRulesConfirm: false,
+  // ── Rule editing ─────────────────────────────────────────────────────────
+  editingRule: null,
+  pendingDeleteConfirmRule: null
+};
 
-// Pack r,g,b,a floats [0-1] into IM_COL32 (ABGR byte order expected by PushStyleColor)
-function col32(r, g, b, a = 1.0) {
-  return (((Math.round(a*255) & 0xFF) << 24)
-        | ((Math.round(b*255) & 0xFF) << 16)
-        | ((Math.round(g*255) & 0xFF) << 8)
-        |  (Math.round(r*255) & 0xFF)) >>> 0;
+// src/ui/constants.ts
+import { ImGui } from "/jsimgui/mod.js";
+var IMGUI_COL_TEXT = ImGui.Col?.Text ?? 0;
+var IMGUI_COL_FRAME_BG = ImGui.Col?.FrameBg ?? 7;
+var IMGUI_COL_FRAME_BG_HOVERED = ImGui.Col?.FrameBgHovered ?? 8;
+var IMGUI_COL_FRAME_BG_ACTIVE = ImGui.Col?.FrameBgActive ?? 9;
+var IMGUI_COL_BUTTON = ImGui.Col?.Button ?? 21;
+var IMGUI_COL_BUTTON_HOVERED = ImGui.Col?.ButtonHovered ?? 22;
+var IMGUI_COL_BUTTON_ACTIVE = ImGui.Col?.ButtonActive ?? 23;
+var IMGUI_COL_MENUBAR_BG = ImGui.Col?.MenuBarBg ?? 13;
+function col32(r, g, b, a = 1) {
+  return ((Math.round(a * 255) & 255) << 24 | (Math.round(b * 255) & 255) << 16 | (Math.round(g * 255) & 255) << 8 | Math.round(r * 255) & 255) >>> 0;
 }
-
-const COL_GREEN  = col32(0.40, 0.95, 0.40); // IN / connected
-const COL_PURPLE = col32(0.78, 0.45, 0.95); // OUT
-const COL_RED    = col32(0.95, 0.40, 0.40); // disconnected
-const COL_ORANGE = col32(0.95, 0.62, 0.18); // modified values
-const COL_BLUE   = col32(0.40, 0.72, 0.98); // counters / search highlights
-
-// ─── Command ID → name ────────────────────────────────────────────────────────
-const CMD_NAMES = {
+var COL_GREEN = col32(0.4, 0.95, 0.4);
+var COL_PURPLE = col32(0.78, 0.45, 0.95);
+var COL_RED = col32(0.95, 0.4, 0.4);
+var COL_ORANGE = col32(0.95, 0.62, 0.18);
+var COL_BLUE = col32(0.4, 0.72, 0.98);
+var COL_TESTING_BG = col32(0.05, 0.22, 0.05);
+var CMD_NAMES = {
   // Common
-  0x0003: 'DISCONNECT',                    0x0005: 'KEEP_ALIVE',
-
+  3: "DISCONNECT",
+  5: "KEEP_ALIVE",
   // Gate server
-  0x2002: 'GATE_LIST',                     0x2003: 'GATE_HELLO',
-  0x2004: 'GATE_ACK',                      0x2005: 'GET_LOBBY_LIST',
-  0x2008: 'GET_NEWS',
-  0x2009: 'GET_NEWS_START',                0x200a: 'GET_NEWS_ITEM',
-  0x200b: 'GET_NEWS_END',
-
+  8194: "GATE_LIST",
+  8195: "GATE_HELLO",
+  8196: "GATE_ACK",
+  8197: "GET_LOBBY_LIST",
+  8200: "GET_NEWS",
+  8201: "GET_NEWS_START",
+  8202: "GET_NEWS_ITEM",
+  8203: "GET_NEWS_END",
   // Account server — session & characters
-  0x3003: 'CHECK_SESSION',                 0x3004: 'CHECK_SESSION_RESP',
-  0x3048: 'GET_CHARACTER_LIST',            0x3049: 'GET_CHARACTER_LIST_RESP',
-  0x3101: 'CREATE_CHARACTER',              0x3102: 'CREATE_CHARACTER_RESP',
-  0x3103: 'SELECT_CHARACTER',              0x3104: 'SELECT_CHARACTER_RESP',
-  0x3105: 'DELETE_CHARACTER',              0x3106: 'DELETE_CHARACTER_RESP',
-
+  12291: "CHECK_SESSION",
+  12292: "CHECK_SESSION_RESP",
+  12360: "GET_CHARACTER_LIST",
+  12361: "GET_CHARACTER_LIST_RESP",
+  12545: "CREATE_CHARACTER",
+  12546: "CREATE_CHARACTER_RESP",
+  12547: "SELECT_CHARACTER",
+  12548: "SELECT_CHARACTER_RESP",
+  12549: "DELETE_CHARACTER",
+  12550: "DELETE_CHARACTER_RESP",
   // Game server — character info
-  0x4100: 'GET_CHARACTER_INFO',            0x4101: 'GET_CHARACTER_INFO_RESP',
-  0x4102: 'GET_PERSONAL_STATS',            0x4103: 'GET_PERSONAL_STATS_RESP',
-  0x4110: 'UPDATE_GAMEPLAY_OPTIONS',       0x4111: 'UPDATE_GAMEPLAY_OPTIONS_RESP',
-  0x4112: 'UPDATE_UI_SETTINGS',            0x4113: 'UPDATE_UI_SETTINGS_RESP',
-  0x4114: 'UPDATE_CHAT_MACROS',            0x4115: 'UPDATE_CHAT_MACROS_RESP',
-  0x411a: 'GET_CHAT_MACROS',              0x411b: 'GET_GAMEPLAY_OPTIONS',
-  0x4120: 'GET_GAMEPLAY_OPTIONS_RESP',     0x4121: 'GET_CHAT_MACROS_RESP',
-  0x4122: 'GET_PERSONAL_INFO',
-  0x4124: 'GET_GEAR',                      0x4125: 'GET_SKILLS',
-  0x4128: 'GET_POST_GAME_INFO',            0x4129: 'GET_POST_GAME_INFO_RESP',
-  0x4130: 'UPDATE_PERSONAL_INFO',          0x4131: 'UPDATE_PERSONAL_INFO_RESP',
-  0x4140: 'GET_SKILL_SETS',               0x4141: 'UPDATE_SKILL_SETS',
-  0x4142: 'GET_GEAR_SETS',                0x4143: 'UPDATE_GEAR_SETS',
-  0x4144: 'UPDATE_GEAR_SETS_RESP',
-  0x4150: 'GET_LOBBY_DISCONNECT',          0x4151: 'GET_LOBBY_DISCONNECT_RESP',
-  0x4220: 'GET_CHARACTER_CARD',            0x4221: 'GET_CHARACTER_CARD_RESP',
-
+  16640: "GET_CHARACTER_INFO",
+  16641: "GET_CHARACTER_INFO_RESP",
+  16642: "GET_PERSONAL_STATS",
+  16643: "GET_PERSONAL_STATS_RESP",
+  16656: "UPDATE_GAMEPLAY_OPTIONS",
+  16657: "UPDATE_GAMEPLAY_OPTIONS_RESP",
+  16658: "UPDATE_UI_SETTINGS",
+  16659: "UPDATE_UI_SETTINGS_RESP",
+  16660: "UPDATE_CHAT_MACROS",
+  16661: "UPDATE_CHAT_MACROS_RESP",
+  16666: "GET_CHAT_MACROS",
+  16667: "GET_GAMEPLAY_OPTIONS",
+  16672: "GET_GAMEPLAY_OPTIONS_RESP",
+  16673: "GET_CHAT_MACROS_RESP",
+  16674: "GET_PERSONAL_INFO",
+  16676: "GET_GEAR",
+  16677: "GET_SKILLS",
+  16680: "GET_POST_GAME_INFO",
+  16681: "GET_POST_GAME_INFO_RESP",
+  16688: "UPDATE_PERSONAL_INFO",
+  16689: "UPDATE_PERSONAL_INFO_RESP",
+  16704: "GET_SKILL_SETS",
+  16705: "UPDATE_SKILL_SETS",
+  16706: "GET_GEAR_SETS",
+  16707: "UPDATE_GEAR_SETS",
+  16708: "UPDATE_GEAR_SETS_RESP",
+  16720: "GET_LOBBY_DISCONNECT",
+  16721: "GET_LOBBY_DISCONNECT_RESP",
+  16928: "GET_CHARACTER_CARD",
+  16929: "GET_CHARACTER_CARD_RESP",
   // Game server — game list
-  0x4300: 'GET_GAME_LIST',
-  0x4301: 'GET_GAME_LIST_START',           0x4302: 'GET_GAME_LIST_ITEM',
-  0x4303: 'GET_GAME_LIST_END',
-  0x4304: 'GET_HOST_SETTINGS',             0x4305: 'GET_HOST_SETTINGS_RESP',
-  0x4310: 'CHECK_HOST_SETTINGS',           0x4311: 'CHECK_HOST_SETTINGS_RESP',
-  0x4312: 'GET_GAME_DETAILS',              0x4313: 'GET_GAME_DETAILS_RESP',
-  0x4316: 'CREATE_GAME',                   0x4317: 'CREATE_GAME_RESP',
-  0x4320: 'JOIN_GAME',                     0x4321: 'JOIN_GAME_RESP',
-  0x4322: 'JOIN_GAME_FAILED',
-
+  17152: "GET_GAME_LIST",
+  17153: "GET_GAME_LIST_START",
+  17154: "GET_GAME_LIST_ITEM",
+  17155: "GET_GAME_LIST_END",
+  17156: "GET_HOST_SETTINGS",
+  17157: "GET_HOST_SETTINGS_RESP",
+  17168: "CHECK_HOST_SETTINGS",
+  17169: "CHECK_HOST_SETTINGS_RESP",
+  17170: "GET_GAME_DETAILS",
+  17171: "GET_GAME_DETAILS_RESP",
+  17174: "CREATE_GAME",
+  17175: "CREATE_GAME_RESP",
+  17184: "JOIN_GAME",
+  17185: "JOIN_GAME_RESP",
+  17186: "JOIN_GAME_FAILED",
   // Game server — in-game
-  0x4340: 'PLAYER_CONNECTED',              0x4341: 'PLAYER_CONNECTED_RESP',
-  0x4342: 'PLAYER_DISCONNECTED',           0x4343: 'PLAYER_DISCONNECTED_RESP',
-  0x4344: 'SET_PLAYER_TEAM',               0x4345: 'SET_PLAYER_TEAM_RESP',
-  0x4346: 'KICK_PLAYER',                   0x4347: 'KICK_PLAYER_RESP',
-  0x4348: 'HOST_PASS',                     0x4349: 'HOST_PASS_RESP',
-  0x4350: 'UPDATE_STATS',                  0x4351: 'UPDATE_STATS_RESP',
-  0x4380: 'QUIT_GAME',                     0x4381: 'QUIT_GAME_RESP',
-  0x4390: 'HOST_UPDATE_STATS',             0x4391: 'HOST_UPDATE_STATS_RESP',
-  0x4392: 'SET_GAME',                      0x4393: 'SET_GAME_RESP',
-  0x4398: 'UPDATE_PINGS',                  0x4399: 'UPDATE_PINGS_RESP',
-  0x43a0: 'PASS_ROUND',                    0x43a1: 'PASS_ROUND_RESP',
-  0x43a2: 'PASS_ROUND_UNK',               0x43a3: 'PASS_ROUND_UNK_RESP',
-  0x43c0: 'HOST_UNK_43C0',               0x43c1: 'HOST_UNK_43C0_RESP',
-  0x43ca: 'START_ROUND',                   0x43cb: 'START_ROUND_RESP',
-  0x43d0: 'TRAINING_CONNECT',              0x43d1: 'TRAINING_CONNECT_RESP',
-
+  17216: "PLAYER_CONNECTED",
+  17217: "PLAYER_CONNECTED_RESP",
+  17218: "PLAYER_DISCONNECTED",
+  17219: "PLAYER_DISCONNECTED_RESP",
+  17220: "SET_PLAYER_TEAM",
+  17221: "SET_PLAYER_TEAM_RESP",
+  17222: "KICK_PLAYER",
+  17223: "KICK_PLAYER_RESP",
+  17224: "HOST_PASS",
+  17225: "HOST_PASS_RESP",
+  17232: "UPDATE_STATS",
+  17233: "UPDATE_STATS_RESP",
+  17280: "QUIT_GAME",
+  17281: "QUIT_GAME_RESP",
+  17296: "HOST_UPDATE_STATS",
+  17297: "HOST_UPDATE_STATS_RESP",
+  17298: "SET_GAME",
+  17299: "SET_GAME_RESP",
+  17304: "UPDATE_PINGS",
+  17305: "UPDATE_PINGS_RESP",
+  17312: "PASS_ROUND",
+  17313: "PASS_ROUND_RESP",
+  17314: "PASS_ROUND_UNK",
+  17315: "PASS_ROUND_UNK_RESP",
+  17344: "HOST_UNK_43C0",
+  17345: "HOST_UNK_43C0_RESP",
+  17354: "START_ROUND",
+  17355: "START_ROUND_RESP",
+  17360: "TRAINING_CONNECT",
+  17361: "TRAINING_CONNECT_RESP",
   // Game server — chat
-  0x4400: 'SEND_CHAT',                     0x4401: 'SEND_CHAT_RESP',
-  0x4440: 'CHAT_UNK_4440',               0x4441: 'CHAT_UNK_4440_RESP',
-
+  17408: "SEND_CHAT",
+  17409: "SEND_CHAT_RESP",
+  17472: "CHAT_UNK_4440",
+  17473: "CHAT_UNK_4440_RESP",
   // Game server — friends / blocked
-  0x4500: 'ADD_FRIENDS_BLOCKED',           0x4501: 'ADD_FRIENDS_BLOCKED_RESP',
-  0x4510: 'REMOVE_FRIENDS_BLOCKED',        0x4511: 'REMOVE_FRIENDS_BLOCKED_RESP',
-  0x4580: 'GET_FRIENDS_BLOCKED_LIST',      0x4581: 'GET_FRIENDS_BLOCKED_LIST_RESP',
-
+  17664: "ADD_FRIENDS_BLOCKED",
+  17665: "ADD_FRIENDS_BLOCKED_RESP",
+  17680: "REMOVE_FRIENDS_BLOCKED",
+  17681: "REMOVE_FRIENDS_BLOCKED_RESP",
+  17792: "GET_FRIENDS_BLOCKED_LIST",
+  17793: "GET_FRIENDS_BLOCKED_LIST_RESP",
   // Game server — search / history
-  0x4600: 'SEARCH_PLAYER',
-  0x4601: 'SEARCH_PLAYER_START',           0x4602: 'SEARCH_PLAYER_RESULT',
-  0x4603: 'SEARCH_PLAYER_END',
-  0x4680: 'GET_MATCH_HISTORY',
-  0x4681: 'GET_MATCH_HISTORY_1',           0x4682: 'GET_MATCH_HISTORY_2',
-  0x4683: 'GET_MATCH_HISTORY_3',
-
+  17920: "SEARCH_PLAYER",
+  17921: "SEARCH_PLAYER_START",
+  17922: "SEARCH_PLAYER_RESULT",
+  17923: "SEARCH_PLAYER_END",
+  18048: "GET_MATCH_HISTORY",
+  18049: "GET_MATCH_HISTORY_1",
+  18050: "GET_MATCH_HISTORY_2",
+  18051: "GET_MATCH_HISTORY_3",
   // Game server — session auth
-  0x4700: 'SESSION_AUTH',                  0x4701: 'SESSION_AUTH_RESP',
-
+  18176: "SESSION_AUTH",
+  18177: "SESSION_AUTH_RESP",
   // Game server — messages
-  0x4800: 'SEND_MESSAGE',                  0x4801: 'SEND_MESSAGE_RESP',
-  0x4820: 'GET_MESSAGES',
-  0x4821: 'GET_MESSAGES_START',            0x4822: 'GET_MESSAGES_ITEM',
-  0x4823: 'GET_MESSAGES_END',
-  0x4840: 'GET_MESSAGE_CONTENTS',          0x4841: 'GET_MESSAGE_CONTENTS_RESP',
-  0x4860: 'ADD_SENT_MESSAGE',              0x4861: 'ADD_SENT_MESSAGE_RESP',
-
+  18432: "SEND_MESSAGE",
+  18433: "SEND_MESSAGE_RESP",
+  18464: "GET_MESSAGES",
+  18465: "GET_MESSAGES_START",
+  18466: "GET_MESSAGES_ITEM",
+  18467: "GET_MESSAGES_END",
+  18496: "GET_MESSAGE_CONTENTS",
+  18497: "GET_MESSAGE_CONTENTS_RESP",
+  18528: "ADD_SENT_MESSAGE",
+  18529: "ADD_SENT_MESSAGE_RESP",
   // Game server — flash news
-  0x4a50: 'FLASH_NEWS',
-
+  19024: "FLASH_NEWS",
   // Game server — lobby info
-  0x4900: 'GET_GAME_LOBBY_INFO',
-  0x4901: 'GET_GAME_LOBBY_INFO_START',     0x4902: 'GET_GAME_LOBBY_INFO_ITEM',
-  0x4903: 'GET_GAME_LOBBY_INFO_END',
-  0x4990: 'GET_GAME_ENTRY_INFO',           0x4991: 'GET_GAME_ENTRY_INFO_RESP',
-
+  18688: "GET_GAME_LOBBY_INFO",
+  18689: "GET_GAME_LOBBY_INFO_START",
+  18690: "GET_GAME_LOBBY_INFO_ITEM",
+  18691: "GET_GAME_LOBBY_INFO_END",
+  18832: "GET_GAME_ENTRY_INFO",
+  18833: "GET_GAME_ENTRY_INFO_RESP",
   // Game server — clans
-  0x4b00: 'CREATE_CLAN',                   0x4b01: 'CREATE_CLAN_RESP',
-  0x4b04: 'DISBAND_CLAN',                  0x4b05: 'DISBAND_CLAN_RESP',
-  0x4b10: 'GET_CLAN_LIST',
-  0x4b11: 'GET_CLAN_LIST_START',           0x4b12: 'GET_CLAN_LIST_ITEM',
-  0x4b13: 'GET_CLAN_LIST_END',
-  0x4b20: 'GET_CLAN_MEMBER_INFO',          0x4b21: 'GET_CLAN_MEMBER_INFO_RESP',
-  0x4b30: 'ACCEPT_CLAN_JOIN',              0x4b31: 'ACCEPT_CLAN_JOIN_RESP',
-  0x4b32: 'DECLINE_CLAN_JOIN',             0x4b33: 'DECLINE_CLAN_JOIN_RESP',
-  0x4b36: 'BANISH_CLAN_MEMBER',            0x4b37: 'BANISH_CLAN_MEMBER_RESP',
-  0x4b40: 'LEAVE_CLAN',                    0x4b41: 'LEAVE_CLAN_RESP',
-  0x4b42: 'APPLY_TO_CLAN',                 0x4b43: 'APPLY_TO_CLAN_RESP',
-  0x4b46: 'UPDATE_CLAN_STATE',             0x4b47: 'UPDATE_CLAN_STATE_RESP',
-  0x4b48: 'GET_CLAN_EMBLEM_LOBBY',         0x4b49: 'GET_CLAN_EMBLEM_LOBBY_RESP',
-  0x4b4a: 'GET_CLAN_EMBLEM',              0x4b4b: 'GET_CLAN_EMBLEM_RESP',
-  0x4b4c: 'GET_CLAN_EMBLEM_WIP',          0x4b4d: 'GET_CLAN_EMBLEM_WIP_RESP',
-  0x4b50: 'SET_CLAN_EMBLEM',               0x4b51: 'SET_CLAN_EMBLEM_RESP',
-  0x4b52: 'GET_CLAN_ROSTER',               0x4b53: 'GET_CLAN_ROSTER_RESP',
-  0x4b60: 'TRANSFER_CLAN_LEADERSHIP',      0x4b61: 'TRANSFER_CLAN_LEADERSHIP_RESP',
-  0x4b62: 'SET_EMBLEM_EDITOR',             0x4b63: 'SET_EMBLEM_EDITOR_RESP',
-  0x4b64: 'UPDATE_CLAN_COMMENT',           0x4b65: 'UPDATE_CLAN_COMMENT_RESP',
-  0x4b66: 'UPDATE_CLAN_NOTICE',            0x4b67: 'UPDATE_CLAN_NOTICE_RESP',
-  0x4b70: 'GET_CLAN_STATS',               0x4b71: 'GET_CLAN_STATS_RESP',
-  0x4b80: 'GET_CLAN_INFO',                0x4b81: 'GET_CLAN_INFO_RESP',
-  0x4b90: 'SEARCH_CLAN',
-  0x4b91: 'SEARCH_CLAN_START',             0x4b92: 'SEARCH_CLAN_RESULT',
-  0x4b93: 'SEARCH_CLAN_END',
+  19200: "CREATE_CLAN",
+  19201: "CREATE_CLAN_RESP",
+  19204: "DISBAND_CLAN",
+  19205: "DISBAND_CLAN_RESP",
+  19216: "GET_CLAN_LIST",
+  19217: "GET_CLAN_LIST_START",
+  19218: "GET_CLAN_LIST_ITEM",
+  19219: "GET_CLAN_LIST_END",
+  19232: "GET_CLAN_MEMBER_INFO",
+  19233: "GET_CLAN_MEMBER_INFO_RESP",
+  19248: "ACCEPT_CLAN_JOIN",
+  19249: "ACCEPT_CLAN_JOIN_RESP",
+  19250: "DECLINE_CLAN_JOIN",
+  19251: "DECLINE_CLAN_JOIN_RESP",
+  19254: "BANISH_CLAN_MEMBER",
+  19255: "BANISH_CLAN_MEMBER_RESP",
+  19264: "LEAVE_CLAN",
+  19265: "LEAVE_CLAN_RESP",
+  19266: "APPLY_TO_CLAN",
+  19267: "APPLY_TO_CLAN_RESP",
+  19270: "UPDATE_CLAN_STATE",
+  19271: "UPDATE_CLAN_STATE_RESP",
+  19272: "GET_CLAN_EMBLEM_LOBBY",
+  19273: "GET_CLAN_EMBLEM_LOBBY_RESP",
+  19274: "GET_CLAN_EMBLEM",
+  19275: "GET_CLAN_EMBLEM_RESP",
+  19276: "GET_CLAN_EMBLEM_WIP",
+  19277: "GET_CLAN_EMBLEM_WIP_RESP",
+  19280: "SET_CLAN_EMBLEM",
+  19281: "SET_CLAN_EMBLEM_RESP",
+  19282: "GET_CLAN_ROSTER",
+  19283: "GET_CLAN_ROSTER_RESP",
+  19296: "TRANSFER_CLAN_LEADERSHIP",
+  19297: "TRANSFER_CLAN_LEADERSHIP_RESP",
+  19298: "SET_EMBLEM_EDITOR",
+  19299: "SET_EMBLEM_EDITOR_RESP",
+  19300: "UPDATE_CLAN_COMMENT",
+  19301: "UPDATE_CLAN_COMMENT_RESP",
+  19302: "UPDATE_CLAN_NOTICE",
+  19303: "UPDATE_CLAN_NOTICE_RESP",
+  19312: "GET_CLAN_STATS",
+  19313: "GET_CLAN_STATS_RESP",
+  19328: "GET_CLAN_INFO",
+  19329: "GET_CLAN_INFO_RESP",
+  19344: "SEARCH_CLAN",
+  19345: "SEARCH_CLAN_START",
+  19346: "SEARCH_CLAN_RESULT",
+  19347: "SEARCH_CLAN_END"
 };
-
-function cmdHex(cmd)  { return '0x' + cmd.toString(16).toUpperCase().padStart(4, '0'); }
-function cmdName(cmd) { return CMD_NAMES[cmd] || 'UKNOWN'; }
-function fmtCmd(cmd)  { const n = CMD_NAMES[cmd]; return n ? `${cmdHex(cmd)} ${n}` : cmdHex(cmd); }
-
-// ─── Hex / ASCII helpers ──────────────────────────────────────────────────────
-function fmtHexSpaced(h) {
-  if (!h) return '';
-  return h.replace(/../g, m => m.toUpperCase() + ' ').trimEnd();
+function cmdHex(cmd) {
+  return "0x" + cmd.toString(16).toUpperCase().padStart(4, "0");
 }
+var WF_NoMove = 4;
+var WF_NoResize = 2;
+var WF_NoCollapse = 32;
+var WF_NoTitleBar = 1;
+var WF_MenuBar = 1024;
+var TF_RowBg = 64;
+var TF_Borders = 1920;
+var TF_ScrollY = 33554432;
+var TF_SizingFixedFit = 8192;
+var CF_WidthFixed = 16;
+var CF_WidthStretch = 8;
+var SEL_SpanAllColumns = 2;
+var BPR = 16;
+var MAX_PACKETS = 2e3;
+var CSTRING_SCAN_LIMIT = 32;
+var SPOOF_SECTION_H = 180;
+var SEARCH_TYPES = ["uint8", "uint16", "uint32", "string", "hex"];
 
-function parseHexInput(raw) { return raw.replace(/\s+/g, '').toLowerCase(); }
-
-const BPR = 16; // bytes per row
-
-function toHexLines(compact) {
-  if (!compact) return '';
-  const rows = [];
-  for (let i = 0; i < compact.length; i += BPR * 2)
-    rows.push(fmtHexSpaced(compact.slice(i, i + BPR * 2)));
-  return rows.join('\n');
+// src/ui/utils/hex.ts
+function parseHexInput(raw) {
+  return raw.replace(/\s+/g, "").toLowerCase();
 }
-
-function toAsciiLines(compact) {
-  if (!compact) return '';
-  const rows = [];
-  for (let i = 0; i < compact.length; i += BPR * 2) {
-    let row = '';
-    for (let j = i; j < Math.min(i + BPR * 2, compact.length); j += 2) {
-      const b = parseInt(compact.slice(j, j + 2), 16);
-      row += (b >= 32 && b < 127) ? String.fromCharCode(b) : '.';
-    }
-    rows.push(row);
-  }
-  return rows.join('\n');
-}
-
-// '.' = keep original byte; anything else = use char code
-function applyAsciiToHex(newAscii, prevCompact) {
-  const str = newAscii.replace(/\n/g, '');
-  let hex = '';
-  for (let i = 0; i < str.length; i++) {
-    const ch = str[i];
-    if (ch === '.') {
-      const orig = prevCompact.slice(i * 2, i * 2 + 2);
-      hex += orig.length === 2 ? orig : '00';
-    } else {
-      hex += ch.charCodeAt(0).toString(16).padStart(2, '0');
-    }
-  }
-  return hex;
-}
-
-// ─── Application state ────────────────────────────────────────────────────────
-const MAX_PACKETS = 2000;
-const packets = [], spoofRules = [], excludedRules = [];
-let ws = null, wsReady = false;
-let spoofingEnabled = false;
-let keepUpstreamOpen = false;
-const tcpStatuses = [];
-
-let autoScroll  = false;
-let selectedIdx = -1;
-
-// Current-packet detail (updated on selection change)
-const detail = {
-  compact:    '',    // current payload (hex)
-  original:   '',    // as-captured payload (hex) — never changed by edits
-  packet:     '',    // full packet (header + plaintext payload)
-  lastIdx:    -2,
-  cursorByte: 0,     // selected byte offset for the data inspector
-};
-
-const inspectorEd = {
-  key: '',
-  cursorKey: '',
-  cStringLen: 1,
-  fields: Object.create(null),
-};
-
-const SEARCH_TYPES = ['uint8', 'uint16', 'uint32', 'string', 'hex'];
-const searchState = {
-  open: false,
-  type: 'string',
-  value: '',
-  results: [],
-  index: -1,
-  direction: 'both',
-  selectedPacketKey: '',
-};
-
-// Deferred WS sends — processed after all ImGui calls to avoid mid-frame state mutation
-let pendingDelete = null;
-let pendingSave   = null;
-let pendingClearRules = false;
-let pendingSpoofingEnabled = null;
-let pendingExcludedRule = null;
-let showConnectionStateModal = false;
-let pendingKeepUpstreamOpen = null;
-let pendingForceCloseUpstream = false;
-let showDisableKeepUpstreamConfirm = false;
-let editingRule = null;              // { cmd, isInbound, payloadHex } — rule editing mode
-let pendingDeleteConfirmRule = null; // rule pending delete confirmation
-let showClearRulesConfirm = false;  // clear-all-rules confirmation
-
-// ─── ImGui flag constants ─────────────────────────────────────────────────────
-const WF_NoMove     = 4;
-const WF_NoResize   = 2;
-const WF_NoCollapse = 32;
-const WF_NoTitleBar = 1;
-const WF_MenuBar    = 1024;
-
-const TF_RowBg          = 64;
-const TF_Borders        = 1920;
-const TF_ScrollX        = 16777216;
-const TF_ScrollY        = 33554432;
-const TF_SizingFixedFit = 8192;
-
-const CF_WidthFixed   = 16;
-const CF_WidthStretch = 8;
-
-const SEL_SpanAllColumns = 2;
-const TNF_DefaultOpen    = 32; // ImGuiTreeNodeFlags_DefaultOpen
-
-// ─── WebSocket ────────────────────────────────────────────────────────────────
-function connectWS() {
-  ws = new WebSocket(`ws://${window.location.hostname}:${window.location.port}/ws`);
-  ws.onopen  = () => { wsReady = true;  setStatus('connected'); };
-  ws.onclose = () => {
-    wsReady = false;
-    setStatus('disconnected - retrying...');
-    setTimeout(connectWS, 2000);
-  };
-  ws.onerror  = () => setStatus('WS error');
-  ws.onmessage = ev => {
-    let msg; try { msg = JSON.parse(ev.data); } catch { return; }
-    if (msg.type === 'packet') {
-      packets.push(msg);
-      if (packets.length > MAX_PACKETS) packets.shift();
-      if (selectedIdx >= packets.length) selectedIdx = packets.length - 1;
-    } else if (msg.type === 'spoofRules') {
-      spoofRules.length = 0;
-      for (const r of msg.rules) spoofRules.push(r);
-      if (editingRule) {
-        const still = spoofRules.find(r => r.cmd === editingRule.cmd && r.isInbound === editingRule.isInbound);
-        if (!still) editingRule = null; // rule was deleted while editing
-      }
-      if (selectedIdx >= 0 && packets[selectedIdx]) loadSelectedDetailFromPacket();
-    } else if (msg.type === 'excludedRules') {
-      excludedRules.length = 0;
-      for (const r of msg.rules) excludedRules.push(r);
-    } else if (msg.type === 'spoofingState') {
-      spoofingEnabled = !!msg.enabled;
-    } else if (msg.type === 'keepUpstreamState') {
-      keepUpstreamOpen = !!msg.enabled;
-    } else if (msg.type === 'tcpStatuses') {
-      tcpStatuses.length = 0;
-      for (const status of msg.statuses) tcpStatuses.push(status);
-    }
-  };
-}
-
-function sendWS(obj) {
-  if (wsReady && ws && ws.readyState === WebSocket.OPEN)
-    ws.send(JSON.stringify(obj));
-}
-
-function setStatus(txt) {
-  const el = document.getElementById('status');
-  if (el) el.textContent = txt;
-}
-
-function centerText(text) {
-  const region = ImGui.GetContentRegionAvail();
-  const textSize = ImGui.CalcTextSize(text);
-  if (region.x > textSize.x) {
-    ImGui.SetCursorPosX(ImGui.GetCursorPosX() + Math.floor((region.x - textSize.x) * 0.5));
-  }
-  ImGui.Text(text);
-}
-
 function compactToBytes(compact) {
   const out = new Uint8Array(compact.length / 2);
   for (let i = 0; i < out.length; i++) out[i] = parseInt(compact.slice(i * 2, i * 2 + 2), 16);
   return out;
 }
-
 function bytesToCompact(bytes) {
-  return Array.from(bytes, b => b.toString(16).padStart(2, '0')).join('');
+  return Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
+}
+function clampCursor(next, nBytes) {
+  return Math.max(0, Math.min(nBytes - 1, next));
 }
 
-function replaceBytesAtCursor(nextBytes) {
-  const full = compactToBytes(detail.compact);
-  const off = detail.cursorByte;
-  if (off + nextBytes.length > full.length) return false;
-  let changed = false;
-  for (let i = 0; i < nextBytes.length; i++) {
-    if (full[off + i] !== nextBytes[i]) { changed = true; break; }
-  }
-  if (!changed) return false;
-  full.set(nextBytes, off);
-  detail.compact = bytesToCompact(full);
-  return true;
-}
-
-function isByteModified(byteOffset) {
-  const start = byteOffset * 2;
-  return detail.compact.slice(start, start + 2) !== detail.original.slice(start, start + 2);
-}
-
-function isRangeModified(byteLen) {
-  const start = detail.cursorByte * 2;
-  const end = start + byteLen * 2;
-  return detail.compact.slice(start, end) !== detail.original.slice(start, end);
-}
-
-
-function requestPacketSelection(idx) {
-  if (idx === selectedIdx && !editingRule) return;
-  selectedIdx = idx;
-  loadSelectedDetailFromPacket();
-}
-
+// src/ui/utils/packet.ts
 function getSelectedPacket() {
-  return selectedIdx >= 0 ? packets[selectedIdx] || null : null;
+  return state.selectedIdx >= 0 ? state.packets[state.selectedIdx] ?? null : null;
 }
-
 function getSelectedRule() {
   const pkt = getSelectedPacket();
   if (!pkt) return null;
-  return spoofRules.find(r => r.cmd === pkt.cmd && r.isInbound === pkt.isInbound) || null;
+  return state.spoofRules.find((r) => r.cmd === pkt.cmd && r.isInbound === pkt.isInbound) ?? null;
 }
-
 function getSelectedExcludedRule() {
   const pkt = getSelectedPacket();
   if (!pkt) return null;
-  return excludedRules.find(r => r.cmd === pkt.cmd && r.isInbound === pkt.isInbound) || null;
+  return state.excludedRules.find((r) => r.cmd === pkt.cmd && r.isInbound === pkt.isInbound) ?? null;
 }
-
 function getVisiblePayloadHex(pkt) {
-  if (!pkt) return '';
-  return pkt.spoofedPayload || pkt.payload || '';
+  return pkt.spoofedPayload ?? pkt.payload ?? "";
 }
-
-function startEditingRule(rule) {
-  editingRule = { cmd: rule.cmd, isInbound: rule.isInbound, payloadHex: rule.payloadHex };
-  selectedIdx = -1;
-  detail.compact    = rule.payloadHex;
-  detail.original   = rule.payloadHex;
-  detail.packet     = '';
-  detail.lastIdx    = -3; // sentinel for rule-edit mode
-  detail.cursorByte = 0;
-  inspectorEd.key = ''; inspectorEd.cursorKey = '';
-  searchState.results = [];
-  searchState.index   = -1;
+function isByteModified(byteOffset) {
+  const start = byteOffset * 2;
+  return state.detail.compact.slice(start, start + 2) !== state.detail.original.slice(start, start + 2);
 }
-
+function isRangeModified(byteLen) {
+  const start = state.detail.cursorByte * 2;
+  const end = start + byteLen * 2;
+  return state.detail.compact.slice(start, end) !== state.detail.original.slice(start, end);
+}
+function replaceBytesAtCursor(nextBytes) {
+  const full = compactToBytes(state.detail.compact);
+  const off = state.detail.cursorByte;
+  if (off + nextBytes.length > full.length) return false;
+  let changed = false;
+  for (let i = 0; i < nextBytes.length; i++) {
+    if (full[off + i] !== nextBytes[i]) {
+      changed = true;
+      break;
+    }
+  }
+  if (!changed) return false;
+  full.set(nextBytes, off);
+  state.detail.compact = bytesToCompact(full);
+  return true;
+}
+function requestPacketSelection(idx) {
+  if (idx === state.selectedIdx && !state.editingRule) return;
+  state.selectedIdx = idx;
+  loadSelectedDetailFromPacket();
+}
 function loadSelectedDetailFromPacket(preserveSearch = false) {
-  editingRule = null;
+  state.editingRule = null;
   const pkt = getSelectedPacket();
   if (!pkt) return;
   const visiblePayload = getVisiblePayloadHex(pkt);
-  detail.lastIdx = selectedIdx;
-  detail.compact = visiblePayload;
-  detail.original = visiblePayload;
-  detail.packet = pkt.packet || '';
-  detail.cursorByte = 0;
-  inspectorEd.key = ''; inspectorEd.cursorKey = '';
+  state.detail.lastIdx = state.selectedIdx;
+  state.detail.compact = visiblePayload;
+  state.detail.original = visiblePayload;
+  state.detail.packet = pkt.packet ?? "";
+  state.detail.cursorByte = 0;
+  state.inspectorEd.key = "";
+  state.inspectorEd.cursorKey = "";
   if (!preserveSearch) {
-    searchState.results = [];
-    searchState.index = -1;
-    searchState.selectedPacketKey = packetSearchKey();
+    state.searchState.results = [];
+    state.searchState.index = -1;
+    state.searchState.selectedPacketKey = packetSearchKey();
   }
 }
-
+function packetSearchKey() {
+  const pkt = getSelectedPacket();
+  return pkt ? `${state.selectedIdx}:${pkt.cmd}:${state.detail.compact.length}` : "";
+}
+function startEditingRule(rule) {
+  state.editingRule = { cmd: rule.cmd, isInbound: rule.isInbound, payloadHex: rule.payloadHex };
+  state.selectedIdx = -1;
+  state.detail.compact = rule.payloadHex;
+  state.detail.original = rule.payloadHex;
+  state.detail.packet = "";
+  state.detail.lastIdx = -3;
+  state.detail.cursorByte = 0;
+  state.inspectorEd.key = "";
+  state.inspectorEd.cursorKey = "";
+  state.searchState.results = [];
+  state.searchState.index = -1;
+}
 function queueSpoofSync() {
-  if (editingRule) {
-    pendingSave = { cmd: editingRule.cmd, isInbound: editingRule.isInbound, payloadHex: detail.compact };
+  if (state.editingRule) {
+    state.pendingSave = {
+      cmd: state.editingRule.cmd,
+      isInbound: state.editingRule.isInbound,
+      payloadHex: state.detail.compact
+    };
     return;
   }
   const pkt = getSelectedPacket();
   if (!pkt) return;
-  pendingSave = { cmd: pkt.cmd, isInbound: pkt.isInbound, payloadHex: detail.compact };
-
-  // Auto-create rule and switch to rule editing view on first edit
+  state.pendingSave = { cmd: pkt.cmd, isInbound: pkt.isInbound, payloadHex: state.detail.compact };
   if (!getSelectedRule()) {
-    const newRule = { cmd: pkt.cmd, isInbound: pkt.isInbound, payloadHex: detail.compact };
-    if (!spoofRules.find(r => r.cmd === newRule.cmd && r.isInbound === newRule.isInbound))
-      spoofRules.push(newRule);
-    editingRule = { cmd: pkt.cmd, isInbound: pkt.isInbound, payloadHex: detail.compact };
-    selectedIdx = -1;
-    detail.lastIdx = -3;
-    detail.packet = '';
-    searchState.results = [];
-    searchState.index = -1;
+    const newRule = { cmd: pkt.cmd, isInbound: pkt.isInbound, payloadHex: state.detail.compact };
+    if (!state.spoofRules.find((r) => r.cmd === newRule.cmd && r.isInbound === newRule.isInbound))
+      state.spoofRules.push(newRule);
+    state.editingRule = { cmd: pkt.cmd, isInbound: pkt.isInbound, payloadHex: state.detail.compact };
+    state.selectedIdx = -1;
+    state.detail.lastIdx = -3;
+    state.detail.packet = "";
+    state.searchState.results = [];
+    state.searchState.index = -1;
   }
 }
-
 function currentPlainPacketCompact() {
   const pkt = getSelectedPacket();
-  if (!pkt) return '';
-  const packetCompact = detail.packet || pkt.packet || '';
+  if (!pkt) return "";
+  const packetCompact = state.detail.packet || pkt.packet || "";
   if (!packetCompact || packetCompact.length < 48) return packetCompact;
-  return packetCompact.slice(0, 48) + detail.compact;
+  return packetCompact.slice(0, 48) + state.detail.compact;
 }
 
-function restoreCurrentPayload() {
-  detail.compact = detail.original;
-  inspectorEd.key = ''; inspectorEd.cursorKey = '';
-  queueSpoofSync();
+// src/ui/websocket.ts
+function connectWS() {
+  const ws = new WebSocket(`ws://${window.location.hostname}:${window.location.port}/ws`);
+  state.ws = ws;
+  ws.onopen = () => {
+    state.wsReady = true;
+    setStatus("connected");
+  };
+  ws.onclose = () => {
+    state.wsReady = false;
+    setStatus("disconnected - retrying...");
+    setTimeout(connectWS, 2e3);
+  };
+  ws.onerror = () => setStatus("WS error");
+  ws.onmessage = (ev) => {
+    let msg;
+    try {
+      msg = JSON.parse(ev.data);
+    } catch {
+      return;
+    }
+    if (msg.type === "packet") {
+      state.packets.push(msg);
+      if (state.packets.length > MAX_PACKETS) state.packets.shift();
+      if (state.selectedIdx >= state.packets.length) state.selectedIdx = state.packets.length - 1;
+    } else if (msg.type === "spoofRules") {
+      state.spoofRules.length = 0;
+      for (const r of msg.rules) state.spoofRules.push(r);
+      if (state.editingRule) {
+        const still = state.spoofRules.find(
+          (r) => r.cmd === state.editingRule.cmd && r.isInbound === state.editingRule.isInbound
+        );
+        if (!still) state.editingRule = null;
+      }
+      if (state.selectedIdx >= 0 && state.packets[state.selectedIdx]) loadSelectedDetailFromPacket();
+    } else if (msg.type === "excludedRules") {
+      state.excludedRules.length = 0;
+      for (const r of msg.rules) state.excludedRules.push(r);
+    } else if (msg.type === "spoofingState") {
+      state.spoofingEnabled = !!msg.enabled;
+    } else if (msg.type === "keepUpstreamState") {
+      state.keepUpstreamOpen = !!msg.enabled;
+    } else if (msg.type === "tcpStatuses") {
+      state.tcpStatuses.length = 0;
+      for (const s of msg.statuses) state.tcpStatuses.push(s);
+    }
+  };
+}
+function sendWS(obj) {
+  if (state.wsReady && state.ws && state.ws.readyState === WebSocket.OPEN)
+    state.ws.send(JSON.stringify(obj));
+}
+function setStatus(txt) {
+  const el = document.getElementById("status");
+  if (el) el.textContent = txt;
 }
 
-// ─── CAB archive builder (uncompressed, CFHEADER format) ─────────────────────
-// Generates a minimal but structurally valid Cabinet (.cab) file containing
-// one or more uncompressed files, so any standard cabinet tool can open it.
-function buildCab(files) {
-  const HEADER_SZ  = 36;
-  const FOLDER_SZ  = 8;
-  const MAX_BLOCK  = 32768; // max uncompressed bytes per CFDATA block
-  const enc        = new TextEncoder();
+// src/ui/components/mainWindow.ts
+import { ImGui as ImGui11, ImVec2 as ImVec29 } from "/jsimgui/mod.js";
 
-  // ── Concatenate all file data ────────────────────────────────────────────
-  let totalBytes = 0;
-  for (const f of files) totalBytes += f.data.length;
-  const allData = new Uint8Array(totalBytes);
-  let wpos = 0;
-  for (const f of files) { allData.set(f.data, wpos); wpos += f.data.length; }
-
-  // ── Split into CFDATA blocks (≤ MAX_BLOCK each) ──────────────────────────
-  const dataBlocks = [];
-  for (let i = 0; i < allData.length; i += MAX_BLOCK)
-    dataBlocks.push(allData.slice(i, Math.min(i + MAX_BLOCK, allData.length)));
-  if (dataBlocks.length === 0) dataBlocks.push(new Uint8Array(0));
-
-  // ── Build CFFILE fixed+name entries ──────────────────────────────────────
-  const now      = new Date();
-  const dosDate  = (((now.getFullYear() - 1980) & 0x7f) << 9)
-                 | (((now.getMonth() + 1)        & 0x0f) << 5)
-                 |  (now.getDate()               & 0x1f);
-  const dosTime  = ((now.getHours()              & 0x1f) << 11)
-                 | ((now.getMinutes()             & 0x3f) << 5)
-                 |  (Math.floor(now.getSeconds() / 2)    & 0x1f);
-
-  const cffileEntries = [];
-  let uoff = 0;
-  for (const f of files) {
-    const nameBytes = enc.encode(f.name);
-    const entry = new Uint8Array(16 + nameBytes.length + 1); // +1 for NUL
-    const dv = new DataView(entry.buffer);
-    dv.setUint32( 0, f.data.length, true); // cbFile
-    dv.setUint32( 4, uoff,          true); // uoffFolderStart
-    dv.setUint16( 8, 0,             true); // iFolder
-    dv.setUint16(10, dosDate,       true); // date
-    dv.setUint16(12, dosTime,       true); // time
-    dv.setUint16(14, 0x20,          true); // attribs: ATTR_ARCH
-    entry.set(nameBytes, 16);
-    cffileEntries.push(entry);
-    uoff += f.data.length;
-  }
-
-  // ── Build CFDATA block entries (8-byte header + payload) ─────────────────
-  const cfDataEntries = dataBlocks.map(block => {
-    const entry = new Uint8Array(8 + block.length);
-    const dv = new DataView(entry.buffer);
-    dv.setUint32(0, 0,            true); // csum (0 = not checksummed)
-    dv.setUint16(4, block.length, true); // cbData
-    dv.setUint16(6, block.length, true); // cbUncomp
-    entry.set(block, 8);
-    return entry;
-  });
-
-  // ── Compute byte offsets ─────────────────────────────────────────────────
-  const cffileSize       = cffileEntries.reduce((s, e) => s + e.length, 0);
-  const cfdataSize       = cfDataEntries.reduce((s, e) => s + e.length, 0);
-  const coffFirstFile    = HEADER_SZ + FOLDER_SZ;
-  const coffFolderData   = coffFirstFile + cffileSize;
-  const totalSize        = HEADER_SZ + FOLDER_SZ + cffileSize + cfdataSize;
-
-  // ── Assemble final buffer ────────────────────────────────────────────────
-  const cab = new Uint8Array(totalSize);
-  const hdv = new DataView(cab.buffer);
-
-  // CFHEADER
-  cab[0] = 0x4D; cab[1] = 0x53; cab[2] = 0x43; cab[3] = 0x46; // "MSCF"
-  hdv.setUint32( 4, 0,               true); // reserved1
-  hdv.setUint32( 8, totalSize,       true); // cbCabinet
-  hdv.setUint32(12, 0,               true); // reserved2
-  hdv.setUint32(16, coffFirstFile,   true); // coffFirstFileEntry
-  hdv.setUint32(20, 0,               true); // reserved3
-  cab[24] = 3; cab[25] = 1;                  // versionMinor, versionMajor
-  hdv.setUint16(26, 1,               true); // cFolders
-  hdv.setUint16(28, files.length,    true); // cFiles
-  hdv.setUint16(30, 0,               true); // flags
-  hdv.setUint16(32, 0,               true); // setID
-  hdv.setUint16(34, 0,               true); // iCabinet
-
-  // CFFOLDER
-  hdv.setUint32(HEADER_SZ,     coffFolderData,      true); // coffCabStart
-  hdv.setUint16(HEADER_SZ + 4, dataBlocks.length,   true); // cCFData
-  hdv.setUint16(HEADER_SZ + 6, 0,                   true); // typeCompress: none
-
-  // CFFILE entries
-  let p = coffFirstFile;
-  for (const e of cffileEntries) { cab.set(e, p); p += e.length; }
-
-  // CFDATA entries
-  for (const e of cfDataEntries) { cab.set(e, p); p += e.length; }
-
-  return cab;
+// src/ui/utils/export.ts
+import { ImGui as ImGui2 } from "/jsimgui/mod.js";
+function fmtDatetime() {
+  const d = /* @__PURE__ */ new Date();
+  const p = (n) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}`;
 }
-
-// ─── Export all captured packets as a CSV file ───────────────────────────────
-function exportAllPackets() {
-  if (packets.length === 0) return;
-
-  function csvField(value) {
-    const s = value == null ? '' : String(value);
-    return s.includes(',') || s.includes('"') || s.includes('\n')
-      ? `"${s.replace(/"/g, '""')}"` : s;
-  }
-
-  const rows = [['Timestamp', 'Direction', 'Command ID', 'Command Name', 'Packet']];
-  for (const pkt of packets) {
-    rows.push([
-      pkt.timestamp,
-      pkt.isInbound ? 'IN' : 'OUT',
-      cmdHex(pkt.cmd),
-      CMD_NAMES[pkt.cmd] || '',
-      // Full decrypted packet: 24-byte header + plaintext payload (hex-encoded).
-      // pkt.packet is null when the backend did not capture the header bytes.
-      pkt.packet || '',
-    ]);
-  }
-  const csv = rows.map(r => r.map(csvField).join(',')).join('\r\n');
-
-  const blob = new Blob([csv], { type: 'text/csv; charset=utf-8' });
-  const url  = URL.createObjectURL(blob);
-  const link = document.createElement('a');
-  link.href     = url;
-  link.download = `capture-${fmtDatetime()}.csv`;
+function triggerDownload(blob, filename) {
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = filename;
   link.click();
   URL.revokeObjectURL(url);
 }
-
-function fmtDatetime() {
-  const d = new Date();
-  const p = n => String(n).padStart(2, '0');
-  return `${d.getFullYear()}${p(d.getMonth()+1)}${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}`;
+function exportAllPackets() {
+  if (state.packets.length === 0) return;
+  function csvField(value) {
+    const s = value == null ? "" : String(value);
+    return s.includes(",") || s.includes('"') || s.includes("\n") ? `"${s.replace(/"/g, '""')}"` : s;
+  }
+  const rows = [["Timestamp", "Direction", "Command ID", "Command Name", "Packet"]];
+  for (const pkt of state.packets) {
+    rows.push([
+      pkt.timestamp,
+      pkt.isInbound ? "IN" : "OUT",
+      cmdHex(pkt.cmd),
+      CMD_NAMES[pkt.cmd] ?? "",
+      pkt.packet ?? ""
+    ]);
+  }
+  const csv = rows.map((r) => r.map(csvField).join(",")).join("\r\n");
+  const blob = new Blob([csv], { type: "text/csv; charset=utf-8" });
+  triggerDownload(blob, `capture-${fmtDatetime()}.csv`);
 }
-
 function exportCurrentPacket() {
   const compact = currentPlainPacketCompact();
   if (!compact) return;
   const bytes = compactToBytes(compact);
-  const blob = new Blob([bytes], { type: 'application/octet-stream' });
-  const url = URL.createObjectURL(blob);
+  const blob = new Blob([bytes], { type: "application/octet-stream" });
   const pkt = getSelectedPacket();
-  const link = document.createElement('a');
-  link.href = url;
-  link.download = `${cmdHex(pkt?.cmd ?? 0).slice(2)}-${pkt?.isInbound ? 'in' : 'out'}-${fmtDatetime()}.bin`;
-  link.click();
-  URL.revokeObjectURL(url);
+  triggerDownload(blob, `${cmdHex(pkt?.cmd ?? 0).slice(2)}-${pkt?.isInbound ? "in" : "out"}-${fmtDatetime()}.bin`);
 }
-
 function copyCurrentPacket() {
   const compact = currentPlainPacketCompact();
   if (!compact) return;
@@ -628,106 +540,130 @@ function copyCurrentPacket() {
       navigator.clipboard.writeText(text);
       return;
     }
-  } catch {}
-  ImGui.SetClipboardText(text);
+  } catch {
+  }
+  ImGui2.SetClipboardText(text);
 }
-
 function exportCurrentRule() {
-  if (!editingRule || !detail.compact) return;
-  const bytes = compactToBytes(detail.compact);
-  const blob = new Blob([bytes], { type: 'application/octet-stream' });
-  const url = URL.createObjectURL(blob);
-  const link = document.createElement('a');
-  link.href = url;
-  link.download = `${cmdHex(editingRule.cmd).slice(2)}-${editingRule.isInbound ? 'in' : 'out'}-${fmtDatetime()}.bin`;
-  link.click();
-  URL.revokeObjectURL(url);
+  if (!state.editingRule || !state.detail.compact) return;
+  const bytes = compactToBytes(state.detail.compact);
+  const blob = new Blob([bytes], { type: "application/octet-stream" });
+  triggerDownload(
+    blob,
+    `${cmdHex(state.editingRule.cmd).slice(2)}-${state.editingRule.isInbound ? "in" : "out"}-${fmtDatetime()}.bin`
+  );
 }
-
 function copyCurrentRule() {
-  if (!editingRule || !detail.compact) return;
-  const text = detail.compact.toUpperCase();
+  if (!state.editingRule || !state.detail.compact) return;
+  const text = state.detail.compact.toUpperCase();
   try {
     if (navigator.clipboard?.writeText) {
       navigator.clipboard.writeText(text);
       return;
     }
-  } catch {}
-  ImGui.SetClipboardText(text);
+  } catch {
+  }
+  ImGui2.SetClipboardText(text);
 }
 
-function clampCursor(next, nBytes) {
-  return Math.max(0, Math.min(nBytes - 1, next));
+// src/ui/components/packetList.ts
+import { ImGui as ImGui3, ImVec2 } from "/jsimgui/mod.js";
+function renderPacketList() {
+  if (!ImGui3.BeginTabBar("##lp_tabs")) return;
+  try {
+    if (!ImGui3.BeginTabItem(`Packets (${state.packets.length})##lp_tab`)) return;
+    try {
+      const flags = TF_ScrollY | TF_Borders | TF_RowBg | TF_SizingFixedFit;
+      if (ImGui3.BeginTable("##pl", 3, flags, new ImVec2(0, -1))) {
+        try {
+          ImGui3.TableSetupScrollFreeze(0, 1);
+          ImGui3.TableSetupColumn("Dir", CF_WidthFixed, 36);
+          ImGui3.TableSetupColumn("ID", CF_WidthFixed, 54);
+          ImGui3.TableSetupColumn("Name", CF_WidthStretch, 0);
+          ImGui3.TableHeadersRow();
+          for (let i = 0; i < state.packets.length; i++) {
+            const pkt = state.packets[i];
+            ImGui3.PushStyleColor(0, pkt.isInbound ? COL_GREEN : COL_PURPLE);
+            ImGui3.TableNextRow();
+            ImGui3.TableSetColumnIndex(0);
+            if (ImGui3.Selectable(
+              `${pkt.isInbound ? "IN" : "OUT"}##r${i}`,
+              state.selectedIdx === i,
+              SEL_SpanAllColumns
+            )) requestPacketSelection(i);
+            ImGui3.TableSetColumnIndex(1);
+            ImGui3.Text(cmdHex(pkt.cmd));
+            ImGui3.TableSetColumnIndex(2);
+            ImGui3.Text(CMD_NAMES[pkt.cmd] ?? "");
+            ImGui3.PopStyleColor(1);
+          }
+          if (state.autoScroll) ImGui3.SetScrollHereY(1);
+        } finally {
+          ImGui3.EndTable();
+        }
+      }
+    } finally {
+      ImGui3.EndTabItem();
+    }
+  } finally {
+    ImGui3.EndTabBar();
+  }
 }
 
-function handleHexCursorKeys(compact) {
-  if (!compact || ImGui.IsAnyItemActive()) return;
-  const nBytes = compact.length / 2;
-  if (nBytes <= 0) return;
+// src/ui/components/centerPanel.ts
+import { ImGui as ImGui6, ImVec2 as ImVec24 } from "/jsimgui/mod.js";
 
-  let next = detail.cursorByte;
-  if (ImGui.IsKeyPressed(ImGui.Key._LeftArrow)) next -= 1;
-  if (ImGui.IsKeyPressed(ImGui.Key._RightArrow)) next += 1;
-  if (ImGui.IsKeyPressed(ImGui.Key._UpArrow)) next -= BPR;
-  if (ImGui.IsKeyPressed(ImGui.Key._DownArrow)) next += BPR;
+// src/ui/components/hexTable.ts
+import { ImGui as ImGui4, ImVec2 as ImVec22 } from "/jsimgui/mod.js";
 
-  detail.cursorByte = clampCursor(next, nBytes);
-}
-
+// src/ui/utils/search.ts
 function buildSearchNeedle(type, value) {
   try {
-    if (type === 'string') {
+    if (type === "string") {
       const bytes = new TextEncoder().encode(value);
       return bytes.length ? bytes : null;
     }
-    if (type === 'hex') {
+    if (type === "hex") {
       const compact = parseHexInput(value);
       if (!compact || compact.length % 2 !== 0) return null;
       return compactToBytes(compact);
     }
-    if (type === 'uint8') {
+    if (type === "uint8") {
       const num = Number(value);
-      if (!Number.isInteger(num) || num < 0 || num > 0xff) return null;
+      if (!Number.isInteger(num) || num < 0 || num > 255) return null;
       return Uint8Array.of(num);
     }
-    if (type === 'uint16') {
+    if (type === "uint16") {
       const num = Number(value);
-      if (!Number.isInteger(num) || num < 0 || num > 0xffff) return null;
+      if (!Number.isInteger(num) || num < 0 || num > 65535) return null;
       const out = new Uint8Array(2);
       new DataView(out.buffer).setUint16(0, num, false);
       return out;
     }
-    if (type === 'uint32') {
+    if (type === "uint32") {
       const num = Number(value);
-      if (!Number.isInteger(num) || num < 0 || num > 0xffffffff) return null;
+      if (!Number.isInteger(num) || num < 0 || num > 4294967295) return null;
       const out = new Uint8Array(4);
       new DataView(out.buffer).setUint32(0, num >>> 0, false);
       return out;
     }
-  } catch {}
+  } catch {
+  }
   return null;
 }
-
-function packetSearchKey() {
-  const pkt = getSelectedPacket();
-  return pkt ? `${selectedIdx}:${pkt.cmd}:${detail.compact.length}` : '';
-}
-
 function runSearch() {
-  const needle = buildSearchNeedle(searchState.type, searchState.value);
-  searchState.results = [];
-  searchState.index = -1;
-  searchState.selectedPacketKey = packetSearchKey();
+  const needle = buildSearchNeedle(state.searchState.type, state.searchState.value);
+  state.searchState.results = [];
+  state.searchState.index = -1;
+  state.searchState.selectedPacketKey = packetSearchKey();
   if (!needle || needle.length === 0) return;
-
-  for (let packetIdx = 0; packetIdx < packets.length; packetIdx++) {
-    const pkt = packets[packetIdx];
-    if (searchState.direction === 'in' && !pkt.isInbound) continue;
-    if (searchState.direction === 'out' && pkt.isInbound) continue;
+  for (let packetIdx = 0; packetIdx < state.packets.length; packetIdx++) {
+    const pkt = state.packets[packetIdx];
+    if (state.searchState.direction === "in" && !pkt.isInbound) continue;
+    if (state.searchState.direction === "out" && pkt.isInbound) continue;
     const payloadHex = getVisiblePayloadHex(pkt);
     const haystack = payloadHex ? compactToBytes(payloadHex) : null;
     if (!haystack || needle.length > haystack.length) continue;
-
     for (let i = 0; i <= haystack.length - needle.length; i++) {
       let match = true;
       for (let j = 0; j < needle.length; j++) {
@@ -736,858 +672,759 @@ function runSearch() {
           break;
         }
       }
-      if (match) searchState.results.push({ packetIdx, start: i, len: needle.length });
-    }
-  }
-
-  if (searchState.results.length > 0) {
-    searchState.index = 0;
-    const first = searchState.results[0];
-    selectedIdx = first.packetIdx;
-    loadSelectedDetailFromPacket(true);
-    detail.cursorByte = first.start;
-  }
-}
-
-function currentSearchMatch() {
-  if (searchState.index < 0 || searchState.index >= searchState.results.length) return null;
-  return searchState.results[searchState.index];
-}
-
-function searchMove(delta) {
-  if (searchState.results.length === 0) return;
-  searchState.index = (searchState.index + delta + searchState.results.length) % searchState.results.length;
-  const match = searchState.results[searchState.index];
-  if (selectedIdx !== match.packetIdx) {
-    selectedIdx = match.packetIdx;
-    loadSelectedDetailFromPacket(true);
-  }
-  detail.cursorByte = match.start;
-}
-
-function isSearchHighlighted(byteOffset) {
-  const match = currentSearchMatch();
-  return !!match && match.packetIdx === selectedIdx && byteOffset >= match.start && byteOffset < match.start + match.len;
-}
-
-function decodePrintableAscii(bytes) {
-  let out = '';
-  for (const byte of bytes) out += (byte >= 32 && byte < 127) ? String.fromCharCode(byte) : '.';
-  return out;
-}
-
-function encodeAsciiPatch(text, prevBytes) {
-  const out = Uint8Array.from(prevBytes);
-  for (let i = 0; i < Math.min(text.length, out.length); i++) {
-    const ch = text[i];
-    out[i] = ch === '.' ? prevBytes[i] : (ch.charCodeAt(0) & 0xff);
-  }
-  return out;
-}
-
-function decodeCString(bytes) {
-  const nul = bytes.indexOf(0);
-  const view = nul === -1 ? bytes : bytes.slice(0, nul);
-  try {
-    return new TextDecoder('utf-8', { fatal: false }).decode(view);
-  } catch {
-    return '';
-  }
-}
-
-function encodeCString(text, fieldLen) {
-  const out = new Uint8Array(fieldLen); // zero-initialised — guarantees null terminator
-  const bytes = new TextEncoder().encode(text);
-  out.set(bytes.slice(0, fieldLen - 1)); // reserve last byte for null
-  return out;
-}
-
-const CSTRING_SCAN_LIMIT = 32;
-
-function syncInspectorFields(buf, dv, n) {
-  const off = detail.cursorByte;
-  const cursorKey = `${detail.lastIdx}:${off}`;
-  const key = `${cursorKey}:${detail.compact}`;
-
-  // Recalculate cstring state only when the cursor BYTE OFFSET changes.
-  // Using only `off` (not `detail.lastIdx`) here means that switching between
-  // packet-view and rule-edit mode at the same byte offset does NOT reset the
-  // cstring display value — preventing an update loop where the mode switch
-  // caused by queueSpoofSync would overwrite the text the user just typed.
-  const cstringByteKey = String(off);
-  const cstringByteChanged = inspectorEd.cstringByteKey !== cstringByteKey;
-  if (cstringByteChanged) {
-    inspectorEd.cstringByteKey = cstringByteKey;
-    const scanLimit = Math.min(CSTRING_SCAN_LIMIT, n);
-    const nullAt = buf.slice(0, scanLimit).indexOf(0);
-    if (nullAt === -1) {
-      inspectorEd.cStringLen = scanLimit;
-    } else if (nullAt === 0) {
-      // First byte is already null (field was cleared). Measure the run of
-      // consecutive nulls so the field stays editable at its original width
-      // rather than collapsing to an un-typeable 1-byte slot.
-      let runEnd = 1;
-      while (runEnd < scanLimit && buf[runEnd] === 0) runEnd++;
-      inspectorEd.cStringLen = runEnd;
-    } else {
-      inspectorEd.cStringLen = nullAt + 1;
-    }
-    inspectorEd.fields['cstring'] = decodeCString(buf.slice(0, scanLimit));
-  }
-
-  // Also track the full cursorKey for the general field-refresh gate below.
-  const cursorMoved = inspectorEd.cursorKey !== cursorKey;
-  if (cursorMoved) inspectorEd.cursorKey = cursorKey;
-
-  if (inspectorEd.key === key) return;
-  inspectorEd.key = key;
-
-  inspectorEd.fields = {
-    uint8: n >= 1 ? String(dv.getUint8(0)) : '',
-    int8: n >= 1 ? String(dv.getInt8(0)) : '',
-    uint16: n >= 2 ? String(dv.getUint16(0, false)) : '',
-    int16: n >= 2 ? String(dv.getInt16(0, false)) : '',
-    uint32: n >= 4 ? String(dv.getUint32(0, false)) : '',
-    int32: n >= 4 ? String(dv.getInt32(0, false)) : '',
-    uint64: n >= 8 ? dv.getBigUint64(0, false).toString() : '',
-    int64: n >= 8 ? dv.getBigInt64(0, false).toString() : '',
-    float32: n >= 4 ? String(dv.getFloat32(0, false)) : '',
-    float64: n >= 8 ? String(dv.getFloat64(0, false)) : '',
-    binary: n >= 1 ? dv.getUint8(0).toString(2).padStart(8, '0') : '',
-    string: decodePrintableAscii(buf.slice(0, Math.min(26, n))),
-    // Preserve the cstring value the user is typing; only refresh it when the
-    // cursor moves (handled above in the cursorMoved branch).
-    cstring: inspectorEd.fields['cstring'] ?? '',
-  };
-}
-
-// ─── ImHex-style hex table with per-byte cursor ───────────────────────────────
-//
-//  Columns: Offset | 00..07 (individual) | 08..0F (individual) | Decoded text
-//  Each byte cell is a Selectable — clicking it sets detail.cursorByte.
-//
-function renderHexTable(compact, tableH) {
-  if (!compact || compact.length < 2) return;
-  const nBytes  = compact.length / 2;
-  const nCols   = 1 + BPR + 1; // Offset + 16 bytes + ASCII = 18
-
-  const flags = TF_ScrollY | TF_Borders | TF_RowBg;
-  if (!ImGui.BeginTable('##ht', nCols, flags, new ImVec2(0, tableH))) return;
-
-  ImGui.TableSetupScrollFreeze(0, 1);
-  ImGui.TableSetupColumn('Offset', CF_WidthFixed, 72);
-  for (let i = 0; i < BPR; i++) {
-    const hdr = i.toString(16).toUpperCase().padStart(2, '0');
-    // Add 4 px gap before the second group of 8 bytes (matches ImHex visual)
-    ImGui.TableSetupColumn(hdr, CF_WidthFixed, i === 8 ? 26 : 22);
-  }
-  ImGui.TableSetupColumn('Decoded text', CF_WidthFixed, 134);
-  ImGui.TableHeadersRow();
-
-  for (let row = 0; row < nBytes; row += BPR) {
-    ImGui.TableNextRow();
-
-    // Offset column
-    ImGui.TableSetColumnIndex(0);
-    ImGui.TextDisabled(row.toString(16).toUpperCase().padStart(8, '0'));
-
-    // Byte columns — each is an individual Selectable
-    for (let b = 0; b < BPR; b++) {
-      const off = row + b;
-      ImGui.TableSetColumnIndex(b + 1);
-      if (off < nBytes) {
-        const hexByte  = compact.slice(off * 2, off * 2 + 2).toUpperCase();
-        const isCursor = off === detail.cursorByte;
-        const modified = isByteModified(off);
-        const searched = isSearchHighlighted(off);
-        if (searched) ImGui.PushStyleColor(IMGUI_COL_TEXT, COL_BLUE);
-        else if (modified) ImGui.PushStyleColor(IMGUI_COL_TEXT, COL_ORANGE);
-        if (ImGui.Selectable(`${hexByte}##b${off}`, isCursor, 0)) {
-          detail.cursorByte = off;
-        }
-        if (searched || modified) ImGui.PopStyleColor(1);
+      if (match) {
+        state.searchState.results.push({ packetIdx, start: i, len: needle.length });
       }
     }
+  }
+  if (state.searchState.results.length > 0) {
+    state.searchState.index = 0;
+    const first = state.searchState.results[0];
+    state.selectedIdx = first.packetIdx;
+    loadSelectedDetailFromPacket(true);
+    state.detail.cursorByte = first.start;
+  }
+}
+function currentSearchMatch() {
+  const { index, results } = state.searchState;
+  if (index < 0 || index >= results.length) return null;
+  return results[index];
+}
+function searchMove(delta) {
+  if (state.searchState.results.length === 0) return;
+  state.searchState.index = (state.searchState.index + delta + state.searchState.results.length) % state.searchState.results.length;
+  const match = state.searchState.results[state.searchState.index];
+  if (state.selectedIdx !== match.packetIdx) {
+    state.selectedIdx = match.packetIdx;
+    loadSelectedDetailFromPacket(true);
+  }
+  state.detail.cursorByte = match.start;
+}
+function isSearchHighlighted(byteOffset) {
+  const match = currentSearchMatch();
+  return !!match && match.packetIdx === state.selectedIdx && byteOffset >= match.start && byteOffset < match.start + match.len;
+}
 
-    // ASCII column
-    ImGui.TableSetColumnIndex(BPR + 1);
-    let ascii = '';
+// src/ui/components/hexTable.ts
+function renderHexTable(compact, tableH) {
+  if (!compact || compact.length < 2) return;
+  const nBytes = compact.length / 2;
+  const nCols = 1 + BPR + 1;
+  const flags = TF_ScrollY | TF_Borders | TF_RowBg;
+  if (!ImGui4.BeginTable("##ht", nCols, flags, new ImVec22(0, tableH))) return;
+  ImGui4.TableSetupScrollFreeze(0, 1);
+  ImGui4.TableSetupColumn("Offset", CF_WidthFixed, 72);
+  for (let i = 0; i < BPR; i++) {
+    const hdr = i.toString(16).toUpperCase().padStart(2, "0");
+    ImGui4.TableSetupColumn(hdr, CF_WidthFixed, i === 8 ? 26 : 22);
+  }
+  ImGui4.TableSetupColumn("Decoded text", CF_WidthFixed, 134);
+  ImGui4.TableHeadersRow();
+  for (let row = 0; row < nBytes; row += BPR) {
+    ImGui4.TableNextRow();
+    ImGui4.TableSetColumnIndex(0);
+    ImGui4.TextDisabled(row.toString(16).toUpperCase().padStart(8, "0"));
+    for (let b = 0; b < BPR; b++) {
+      const off = row + b;
+      ImGui4.TableSetColumnIndex(b + 1);
+      if (off < nBytes) {
+        const hexByte = compact.slice(off * 2, off * 2 + 2).toUpperCase();
+        const isCursor = off === state.detail.cursorByte;
+        const modified = isByteModified(off);
+        const searched = isSearchHighlighted(off);
+        if (searched) ImGui4.PushStyleColor(IMGUI_COL_TEXT, COL_BLUE);
+        else if (modified) ImGui4.PushStyleColor(IMGUI_COL_TEXT, COL_ORANGE);
+        if (ImGui4.Selectable(`${hexByte}##b${off}`, isCursor, 0)) {
+          state.detail.cursorByte = off;
+        }
+        if (searched || modified) ImGui4.PopStyleColor(1);
+      }
+    }
+    ImGui4.TableSetColumnIndex(BPR + 1);
+    let ascii = "";
     let rowModified = false;
     let rowSearched = false;
     for (let b = 0; b < BPR; b++) {
       const off = row + b;
       if (off < nBytes) {
         const byte = parseInt(compact.slice(off * 2, off * 2 + 2), 16);
-        ascii += (byte >= 32 && byte < 127) ? String.fromCharCode(byte) : '.';
+        ascii += byte >= 32 && byte < 127 ? String.fromCharCode(byte) : ".";
         rowModified ||= isByteModified(off);
         rowSearched ||= isSearchHighlighted(off);
       }
     }
-    if (rowSearched) ImGui.PushStyleColor(IMGUI_COL_TEXT, COL_BLUE);
-    else if (rowModified) ImGui.PushStyleColor(IMGUI_COL_TEXT, COL_ORANGE);
-    ImGui.TextDisabled(ascii);
-    if (rowSearched || rowModified) ImGui.PopStyleColor(1);
+    if (rowSearched) ImGui4.PushStyleColor(IMGUI_COL_TEXT, COL_BLUE);
+    else if (rowModified) ImGui4.PushStyleColor(IMGUI_COL_TEXT, COL_ORANGE);
+    ImGui4.TextDisabled(ascii);
+    if (rowSearched || rowModified) ImGui4.PopStyleColor(1);
   }
-
-  ImGui.EndTable();
+  ImGui4.EndTable();
+}
+function handleHexCursorKeys(compact) {
+  if (!compact || ImGui4.IsAnyItemActive()) return;
+  const nBytes = compact.length / 2;
+  if (nBytes <= 0) return;
+  const key = ImGui4.Key;
+  let next = state.detail.cursorByte;
+  if (key && ImGui4.IsKeyPressed(key._LeftArrow)) next -= 1;
+  if (key && ImGui4.IsKeyPressed(key._RightArrow)) next += 1;
+  if (key && ImGui4.IsKeyPressed(key._UpArrow)) next -= BPR;
+  if (key && ImGui4.IsKeyPressed(key._DownArrow)) next += BPR;
+  state.detail.cursorByte = clampCursor(next, nBytes);
 }
 
-// ─── Two-column editable hex/ASCII editor ─────────────────────────────────────
-function renderHexEditor(ed, uid, height, hexColW) {
-  let changed = false;
-
-  const hb = [ed.hex];
-  if (ImGui.InputTextMultiline(`##hex_${uid}`, hb, 8192, new ImVec2(hexColW, height))) {
-    ed.hex = hb[0];
-    const c = parseHexInput(ed.hex);
-    if (c.length % 2 === 0) { ed.compact = c; ed.ascii = toAsciiLines(c); changed = true; }
+// src/ui/components/spoofRules.ts
+import { ImGui as ImGui5, ImVec2 as ImVec23 } from "/jsimgui/mod.js";
+function renderSpoofRulesSection() {
+  const actionGap = 6;
+  const spoofingWasEnabled = state.spoofingEnabled;
+  ImGui5.Dummy(new ImVec23(0, 4));
+  if (spoofingWasEnabled) {
+    ImGui5.PushStyleColor(IMGUI_COL_BUTTON, col32(0.8, 0.24, 0.24, 1));
+    ImGui5.PushStyleColor(IMGUI_COL_BUTTON_HOVERED, col32(0.92, 0.3, 0.3, 1));
+    ImGui5.PushStyleColor(IMGUI_COL_BUTTON_ACTIVE, col32(0.68, 0.18, 0.18, 1));
   }
-
-  ImGui.SameLine(0, 4);
-
-  const ab = [ed.ascii];
-  if (ImGui.InputTextMultiline(`##ascii_${uid}`, ab, 4096, new ImVec2(-1, height))) {
-    ed.ascii   = ab[0];
-    const c    = applyAsciiToHex(ed.ascii, ed.compact);
-    ed.compact = c;
-    ed.hex     = toHexLines(c);
-    changed    = true;
+  if (ImGui5.Button(state.spoofingEnabled ? "Stop testing" : "Start testing")) {
+    state.pendingSpoofingEnabled = !state.spoofingEnabled;
+    state.spoofingEnabled = !state.spoofingEnabled;
   }
-  return changed;
-}
-
-// ─── Data Inspector (reads from detail.cursorByte offset) ─────────────────────
-function renderDataInspector() {
-  const compact = detail.compact;
-  const off     = detail.cursorByte;
-
-  // Cursor indicator — matches ImHex style
-  ImGui.TextDisabled(`Cursor  0x${off.toString(16).toUpperCase().padStart(8, '0')}`);
-  ImGui.Separator();
-
-  if (!compact || compact.length < 2 || off * 2 >= compact.length) {
-    ImGui.TextDisabled('(no data at cursor)');
+  if (spoofingWasEnabled) ImGui5.PopStyleColor(3);
+  ImGui5.SameLine(0, actionGap);
+  if (ImGui5.Button("Clear rules")) state.showClearRulesConfirm = true;
+  ImGui5.Dummy(new ImVec23(0, 4));
+  ImGui5.Spacing();
+  ImGui5.TextDisabled(`Test Rules (${state.spoofRules.length})`);
+  if (state.spoofRules.length === 0) {
+    ImGui5.TextDisabled("  No active rules.");
     return;
   }
+  const flags = TF_Borders | TF_RowBg | TF_SizingFixedFit | TF_ScrollY;
+  if (!ImGui5.BeginTable("##sr", 4, flags, new ImVec23(0, -1))) return;
+  try {
+    ImGui5.TableSetupScrollFreeze(0, 1);
+    ImGui5.TableSetupColumn("Dir", CF_WidthFixed, 28);
+    ImGui5.TableSetupColumn("ID", CF_WidthFixed, 56);
+    ImGui5.TableSetupColumn("Name", CF_WidthStretch, 0);
+    ImGui5.TableSetupColumn("Actions", CF_WidthFixed, 112);
+    ImGui5.TableHeadersRow();
+    for (const rule of state.spoofRules) {
+      const k = `${rule.isInbound ? 1 : 0}_${rule.cmd}`;
+      const rowHeight = 30;
+      const textOffsetY = Math.max(0, Math.floor((rowHeight - ImGui5.GetTextLineHeight()) * 0.5) - 1);
+      const btnOffsetY = Math.max(0, Math.floor((rowHeight - 24) * 0.5));
+      ImGui5.PushStyleColor(0, rule.isInbound ? COL_GREEN : COL_PURPLE);
+      ImGui5.TableNextRow(0, rowHeight);
+      ImGui5.TableSetColumnIndex(0);
+      ImGui5.SetCursorPosY(ImGui5.GetCursorPosY() + textOffsetY);
+      ImGui5.Text(rule.isInbound ? "IN" : "OUT");
+      ImGui5.PopStyleColor(1);
+      ImGui5.TableSetColumnIndex(1);
+      ImGui5.SetCursorPosY(ImGui5.GetCursorPosY() + textOffsetY);
+      ImGui5.Text(cmdHex(rule.cmd));
+      ImGui5.TableSetColumnIndex(2);
+      ImGui5.SetCursorPosY(ImGui5.GetCursorPosY() + textOffsetY);
+      ImGui5.Text(CMD_NAMES[rule.cmd] ?? "");
+      ImGui5.TableSetColumnIndex(3);
+      ImGui5.SetCursorPosY(ImGui5.GetCursorPosY() + btnOffsetY);
+      if (ImGui5.Button(`Edit##${k}`)) startEditingRule(rule);
+      ImGui5.SameLine(0, 4);
+      if (ImGui5.Button(`Delete##${k}`))
+        state.pendingDeleteConfirmRule = { cmd: rule.cmd, isInbound: rule.isInbound };
+    }
+  } finally {
+    ImGui5.EndTable();
+  }
+}
 
-  // Slice from cursor offset so all types read starting at the selected byte
+// src/ui/components/centerPanel.ts
+function renderCenterPanel() {
+  const hasSel = state.selectedIdx >= 0 && state.packets[state.selectedIdx] != null;
+  ImGui6.BeginChild("##cptop", new ImVec24(0, -(SPOOF_SECTION_H + 6)), 0, 0);
+  try {
+    if (state.editingRule) {
+      ImGui6.PushStyleColor(IMGUI_COL_TEXT, COL_ORANGE);
+      ImGui6.Text("Rule");
+      ImGui6.PopStyleColor(1);
+      ImGui6.SameLine(0, 8);
+      ImGui6.Text(cmdHex(state.editingRule.cmd));
+      if (CMD_NAMES[state.editingRule.cmd]) {
+        ImGui6.SameLine(0, 8);
+        ImGui6.Text(CMD_NAMES[state.editingRule.cmd]);
+      }
+      ImGui6.Separator();
+      renderHexTable(state.detail.compact, -1);
+      handleHexCursorKeys(state.detail.compact);
+    } else if (!hasSel) {
+      ImGui6.Spacing();
+      ImGui6.TextDisabled("  No packet selected.");
+      ImGui6.TextDisabled("  Click a row in the packet list on the left.");
+    } else {
+      const pkt = state.packets[state.selectedIdx];
+      if (state.detail.lastIdx !== state.selectedIdx) {
+        loadSelectedDetailFromPacket();
+      }
+      ImGui6.PushStyleColor(IMGUI_COL_TEXT, pkt.isInbound ? COL_GREEN : COL_PURPLE);
+      ImGui6.Text(pkt.isInbound ? "IN" : "OUT");
+      ImGui6.PopStyleColor(1);
+      ImGui6.SameLine(0, 8);
+      ImGui6.Text(cmdHex(pkt.cmd));
+      if (CMD_NAMES[pkt.cmd]) {
+        ImGui6.SameLine(0, 8);
+        ImGui6.Text(CMD_NAMES[pkt.cmd]);
+      }
+      ImGui6.SameLine(0, 12);
+      ImGui6.TextDisabled(`${pkt.payloadLen} bytes`);
+      ImGui6.Separator();
+      renderHexTable(state.detail.compact, -1);
+      handleHexCursorKeys(state.detail.compact);
+    }
+  } finally {
+    ImGui6.EndChild();
+  }
+  if (state.spoofRules.length === 0) ImGui6.Separator();
+  ImGui6.BeginChild("##ss", new ImVec24(0, SPOOF_SECTION_H), 0, 0);
+  try {
+    renderSpoofRulesSection();
+  } finally {
+    ImGui6.EndChild();
+  }
+}
+
+// src/ui/components/rightSidebar.ts
+import { ImGui as ImGui8, ImVec2 as ImVec26 } from "/jsimgui/mod.js";
+
+// src/ui/components/dataInspector.ts
+import { ImGui as ImGui7 } from "/jsimgui/mod.js";
+function decodePrintableAscii(bytes) {
+  let out = "";
+  for (const byte of bytes) out += byte >= 32 && byte < 127 ? String.fromCharCode(byte) : ".";
+  return out;
+}
+function encodeAsciiPatch(text, prevBytes) {
+  const out = Uint8Array.from(prevBytes);
+  for (let i = 0; i < Math.min(text.length, out.length); i++) {
+    const ch = text[i];
+    out[i] = ch === "." ? prevBytes[i] : ch.charCodeAt(0) & 255;
+  }
+  return out;
+}
+function decodeCString(bytes) {
+  const nul = bytes.indexOf(0);
+  const view = nul === -1 ? bytes : bytes.slice(0, nul);
+  try {
+    return new TextDecoder("utf-8", { fatal: false }).decode(view);
+  } catch {
+    return "";
+  }
+}
+function encodeCString(text, fieldLen) {
+  const out = new Uint8Array(fieldLen);
+  const bytes = new TextEncoder().encode(text);
+  out.set(bytes.slice(0, fieldLen - 1));
+  return out;
+}
+function syncInspectorFields(buf, dv, n) {
+  const off = state.detail.cursorByte;
+  const cursorKey = `${state.detail.lastIdx}:${off}`;
+  const key = `${cursorKey}:${state.detail.compact}`;
+  const cstringByteKey = String(off);
+  const cstringByteChanged = state.inspectorEd.cstringByteKey !== cstringByteKey;
+  if (cstringByteChanged) {
+    state.inspectorEd.cstringByteKey = cstringByteKey;
+    const scanLimit = Math.min(CSTRING_SCAN_LIMIT, n);
+    const nullAt = buf.slice(0, scanLimit).indexOf(0);
+    if (nullAt === -1) {
+      state.inspectorEd.cStringLen = scanLimit;
+    } else if (nullAt === 0) {
+      let runEnd = 1;
+      while (runEnd < scanLimit && buf[runEnd] === 0) runEnd++;
+      state.inspectorEd.cStringLen = runEnd;
+    } else {
+      state.inspectorEd.cStringLen = nullAt + 1;
+    }
+    state.inspectorEd.fields["cstring"] = decodeCString(buf.slice(0, scanLimit));
+  }
+  const cursorMoved = state.inspectorEd.cursorKey !== cursorKey;
+  if (cursorMoved) state.inspectorEd.cursorKey = cursorKey;
+  if (state.inspectorEd.key === key) return;
+  state.inspectorEd.key = key;
+  state.inspectorEd.fields = {
+    uint8: n >= 1 ? String(dv.getUint8(0)) : "",
+    int8: n >= 1 ? String(dv.getInt8(0)) : "",
+    uint16: n >= 2 ? String(dv.getUint16(0, false)) : "",
+    int16: n >= 2 ? String(dv.getInt16(0, false)) : "",
+    uint32: n >= 4 ? String(dv.getUint32(0, false)) : "",
+    int32: n >= 4 ? String(dv.getInt32(0, false)) : "",
+    uint64: n >= 8 ? dv.getBigUint64(0, false).toString() : "",
+    int64: n >= 8 ? dv.getBigInt64(0, false).toString() : "",
+    float32: n >= 4 ? String(dv.getFloat32(0, false)) : "",
+    float64: n >= 8 ? String(dv.getFloat64(0, false)) : "",
+    binary: n >= 1 ? dv.getUint8(0).toString(2).padStart(8, "0") : "",
+    string: decodePrintableAscii(buf.slice(0, Math.min(26, n))),
+    cstring: state.inspectorEd.fields["cstring"] ?? ""
+  };
+}
+function renderDataInspector() {
+  const compact = state.detail.compact;
+  const off = state.detail.cursorByte;
+  ImGui7.TextDisabled(`Cursor  0x${off.toString(16).toUpperCase().padStart(8, "0")}`);
+  ImGui7.Separator();
+  if (!compact || compact.length < 2 || off * 2 >= compact.length) {
+    ImGui7.TextDisabled("(no data at cursor)");
+    return;
+  }
   const slice = compact.slice(off * 2);
-  const n     = slice.length / 2;
-  const buf   = new Uint8Array(n);
+  const n = slice.length / 2;
+  const buf = new Uint8Array(n);
   for (let i = 0; i < n; i++) buf[i] = parseInt(slice.slice(i * 2, i * 2 + 2), 16);
   const dv = new DataView(buf.buffer);
   syncInspectorFields(buf, dv, n);
-
   const flags = TF_Borders | TF_RowBg | TF_SizingFixedFit;
-  if (!ImGui.BeginTable('##di', 2, flags)) return;
-  ImGui.TableSetupColumn('Type',  CF_WidthFixed,   80);
-  ImGui.TableSetupColumn('Value', CF_WidthStretch,  0);
-  ImGui.TableHeadersRow();
-
+  if (!ImGui7.BeginTable("##di", 2, flags)) return;
+  ImGui7.TableSetupColumn("Type", CF_WidthFixed, 80);
+  ImGui7.TableSetupColumn("Value", CF_WidthStretch, 0);
+  ImGui7.TableHeadersRow();
   function renderRowLabel(label, modified) {
-    if (modified) ImGui.PushStyleColor(0, COL_ORANGE);
-    ImGui.TextDisabled(label);
-    if (modified) ImGui.PopStyleColor(1);
+    if (modified) ImGui7.PushStyleColor(IMGUI_COL_TEXT, COL_ORANGE);
+    ImGui7.TextDisabled(label);
+    if (modified) ImGui7.PopStyleColor(1);
   }
-
   function row(label, val, modified = false) {
-    ImGui.TableNextRow();
-    ImGui.TableSetColumnIndex(0); renderRowLabel(label, modified);
-    ImGui.TableSetColumnIndex(1); ImGui.Text(String(val));
+    ImGui7.TableNextRow();
+    ImGui7.TableSetColumnIndex(0);
+    renderRowLabel(label, modified);
+    ImGui7.TableSetColumnIndex(1);
+    ImGui7.Text(String(val));
   }
   function na(label, modified = false) {
-    ImGui.TableNextRow();
-    ImGui.TableSetColumnIndex(0); renderRowLabel(label, modified);
-    ImGui.TableSetColumnIndex(1); ImGui.TextDisabled('--');
-  }
-
-function editRow(label, fieldKey, byteLen, parseToBytes) {
-    const modified = isRangeModified(byteLen);
-    ImGui.TableNextRow();
-    ImGui.TableSetColumnIndex(0);
+    ImGui7.TableNextRow();
+    ImGui7.TableSetColumnIndex(0);
     renderRowLabel(label, modified);
-    ImGui.TableSetColumnIndex(1);
-    ImGui.SetNextItemWidth(-1);
-    const bufRef = [inspectorEd.fields[fieldKey] ?? ''];
-    ImGui.PushStyleColor(IMGUI_COL_FRAME_BG, col32(0, 0, 0, 0));
-    ImGui.PushStyleColor(IMGUI_COL_FRAME_BG_HOVERED, col32(0.28, 0.33, 0.42, 0.38));
-    ImGui.PushStyleColor(IMGUI_COL_FRAME_BG_ACTIVE, col32(0, 0, 0, 0));
-    if (ImGui.InputText(`##${fieldKey}`, bufRef, 256)) {
-      inspectorEd.fields[fieldKey] = bufRef[0];
+    ImGui7.TableSetColumnIndex(1);
+    ImGui7.TextDisabled("--");
+  }
+  function editRow(label, fieldKey, byteLen, parseToBytes) {
+    const modified = isRangeModified(byteLen);
+    ImGui7.TableNextRow();
+    ImGui7.TableSetColumnIndex(0);
+    renderRowLabel(label, modified);
+    ImGui7.TableSetColumnIndex(1);
+    ImGui7.SetNextItemWidth(-1);
+    const bufRef = [state.inspectorEd.fields[fieldKey] ?? ""];
+    ImGui7.PushStyleColor(IMGUI_COL_FRAME_BG, col32(0, 0, 0, 0));
+    ImGui7.PushStyleColor(IMGUI_COL_FRAME_BG_HOVERED, col32(0.28, 0.33, 0.42, 0.38));
+    ImGui7.PushStyleColor(IMGUI_COL_FRAME_BG_ACTIVE, col32(0, 0, 0, 0));
+    if (ImGui7.InputText(`##${fieldKey}`, bufRef, 256)) {
+      state.inspectorEd.fields[fieldKey] = bufRef[0];
       const nextBytes = parseToBytes(bufRef[0]);
       if (nextBytes && replaceBytesAtCursor(nextBytes)) queueSpoofSync();
     }
-    ImGui.PopStyleColor(3);
+    ImGui7.PopStyleColor(3);
   }
-
-  function decodeNullTerminatedString(bytes) {
-    const nul = bytes.indexOf(0);
-    const view = nul === -1 ? bytes : bytes.slice(0, nul);
-    try {
-      return new TextDecoder('utf-8', { fatal: false }).decode(view);
-    } catch {
-      return '';
-    }
-  }
-
-  n >= 1 ? editRow('uint8', 'uint8', 1, value => {
+  n >= 1 ? editRow("uint8", "uint8", 1, (value) => {
     const num = Number(value);
-    if (!Number.isInteger(num) || num < 0 || num > 0xff) return null;
+    if (!Number.isInteger(num) || num < 0 || num > 255) return null;
     return Uint8Array.of(num);
-  }) : na('uint8');
-  n >= 1 ? editRow('int8', 'int8', 1, value => {
+  }) : na("uint8");
+  n >= 1 ? editRow("int8", "int8", 1, (value) => {
     const num = Number(value);
-    if (!Number.isInteger(num) || num < -0x80 || num > 0x7f) return null;
+    if (!Number.isInteger(num) || num < -128 || num > 127) return null;
     const out = new Uint8Array(1);
     new DataView(out.buffer).setInt8(0, num);
     return out;
-  }) : na('int8');
-  n >= 2 ? editRow('uint16', 'uint16', 2, value => {
+  }) : na("int8");
+  n >= 2 ? editRow("uint16", "uint16", 2, (value) => {
     const num = Number(value);
-    if (!Number.isInteger(num) || num < 0 || num > 0xffff) return null;
+    if (!Number.isInteger(num) || num < 0 || num > 65535) return null;
     const out = new Uint8Array(2);
     new DataView(out.buffer).setUint16(0, num, false);
     return out;
-  }) : na('uint16');
-  n >= 2 ? editRow('int16', 'int16', 2, value => {
+  }) : na("uint16");
+  n >= 2 ? editRow("int16", "int16", 2, (value) => {
     const num = Number(value);
-    if (!Number.isInteger(num) || num < -0x8000 || num > 0x7fff) return null;
+    if (!Number.isInteger(num) || num < -32768 || num > 32767) return null;
     const out = new Uint8Array(2);
     new DataView(out.buffer).setInt16(0, num, false);
     return out;
-  }) : na('int16');
-  n >= 4 ? editRow('uint32', 'uint32', 4, value => {
+  }) : na("int16");
+  n >= 4 ? editRow("uint32", "uint32", 4, (value) => {
     const num = Number(value);
-    if (!Number.isInteger(num) || num < 0 || num > 0xffffffff) return null;
+    if (!Number.isInteger(num) || num < 0 || num > 4294967295) return null;
     const out = new Uint8Array(4);
     new DataView(out.buffer).setUint32(0, num >>> 0, false);
     return out;
-  }) : na('uint32');
-  n >= 4 ? editRow('int32', 'int32', 4, value => {
+  }) : na("uint32");
+  n >= 4 ? editRow("int32", "int32", 4, (value) => {
     const num = Number(value);
-    if (!Number.isInteger(num) || num < -0x80000000 || num > 0x7fffffff) return null;
+    if (!Number.isInteger(num) || num < -2147483648 || num > 2147483647) return null;
     const out = new Uint8Array(4);
     new DataView(out.buffer).setInt32(0, num | 0, false);
     return out;
-  }) : na('int32');
+  }) : na("int32");
   try {
-    n >= 8 ? editRow('uint64', 'uint64', 8, value => {
+    n >= 8 ? editRow("uint64", "uint64", 8, (value) => {
       try {
         const num = BigInt(value);
         if (num < 0n || num > 0xffffffffffffffffn) return null;
         const out = new Uint8Array(8);
         new DataView(out.buffer).setBigUint64(0, num, false);
         return out;
-      } catch { return null; }
-    }) : na('uint64');
-    n >= 8 ? editRow('int64', 'int64', 8, value => {
+      } catch {
+        return null;
+      }
+    }) : na("uint64");
+    n >= 8 ? editRow("int64", "int64", 8, (value) => {
       try {
         const num = BigInt(value);
         if (num < -0x8000000000000000n || num > 0x7fffffffffffffffn) return null;
         const out = new Uint8Array(8);
         new DataView(out.buffer).setBigInt64(0, num, false);
         return out;
-      } catch { return null; }
-    }) : na('int64');
-  } catch { na('uint64'); na('int64'); }
-  n >= 4 ? editRow('float32', 'float32', 4, value => {
+      } catch {
+        return null;
+      }
+    }) : na("int64");
+  } catch {
+    na("uint64");
+    na("int64");
+  }
+  n >= 4 ? editRow("float32", "float32", 4, (value) => {
     const num = Number(value);
     if (!Number.isFinite(num)) return null;
     const out = new Uint8Array(4);
     new DataView(out.buffer).setFloat32(0, num, false);
     return out;
-  }) : na('float32');
-  n >= 8 ? editRow('float64', 'float64', 8, value => {
+  }) : na("float32");
+  n >= 8 ? editRow("float64", "float64", 8, (value) => {
     const num = Number(value);
     if (!Number.isFinite(num)) return null;
     const out = new Uint8Array(8);
     new DataView(out.buffer).setFloat64(0, num, false);
     return out;
-  }) : na('float64');
-  n >= 1 ? editRow('binary', 'binary', 1, value => {
+  }) : na("float64");
+  n >= 1 ? editRow("binary", "binary", 1, (value) => {
     if (!/^[01]{1,8}$/.test(value)) return null;
-    return Uint8Array.of(parseInt(value.padStart(8, '0'), 2));
-  }) : na('binary');
-  n >= 1 ? editRow('string', 'string', Math.min(26, n), value => {
+    return Uint8Array.of(parseInt(value.padStart(8, "0"), 2));
+  }) : na("binary");
+  n >= 1 ? editRow("string", "string", Math.min(26, n), (value) => {
     return encodeAsciiPatch(value.slice(0, Math.min(26, n)), buf.slice(0, Math.min(26, n)));
-  }) : na('string');
-  const cStringLen = inspectorEd.cStringLen;
-  n >= 1 ? editRow('cstring', 'cstring', cStringLen, value => {
+  }) : na("string");
+  const cStringLen = state.inspectorEd.cStringLen;
+  n >= 1 ? editRow("cstring", "cstring", cStringLen, (value) => {
     return encodeCString(value, cStringLen);
-  }) : na('cstring');
-
-  ImGui.EndTable();
+  }) : na("cstring");
+  ImGui7.EndTable();
 }
 
-// ─── RIGHT panel — Data Inspector + Actions ───────────────────────────────────
+// src/ui/components/rightSidebar.ts
 function renderRightSidebar(vpH) {
   const inspectorH = Math.floor((vpH - 48) * 0.62);
-
-  ImGui.BeginChild('##di_pane', new ImVec2(0, inspectorH), 0, 0);
+  ImGui8.BeginChild("##di_pane", new ImVec26(0, inspectorH), 0, 0);
   try {
-    if (ImGui.BeginTabBar('##inspector_tabs')) {
+    if (ImGui8.BeginTabBar("##inspector_tabs")) {
       try {
-        if (ImGui.BeginTabItem('Data Inspector')) {
+        if (ImGui8.BeginTabItem("Data Inspector")) {
           renderDataInspector();
-          ImGui.EndTabItem();
+          ImGui8.EndTabItem();
         }
       } finally {
-        ImGui.EndTabBar();
+        ImGui8.EndTabBar();
       }
     }
   } finally {
-    ImGui.EndChild();
+    ImGui8.EndChild();
   }
-
-  ImGui.BeginChild('##actions_pane', new ImVec2(0, 0), 0, 0);
+  ImGui8.BeginChild("##actions_pane", new ImVec26(0, 0), 0, 0);
   try {
-    if (ImGui.BeginTabBar('##actions_tabs')) {
+    if (ImGui8.BeginTabBar("##actions_tabs")) {
       try {
-        if (ImGui.BeginTabItem('Actions')) {
-          const hasSel = selectedIdx >= 0 && packets[selectedIdx] != null;
-
-          if (!hasSel && !editingRule) {
-            ImGui.TextDisabled('No packet selected.');
-          } else if (editingRule) {
-            ImGui.Spacing();
+        if (ImGui8.BeginTabItem("Actions")) {
+          const hasSel = state.selectedIdx >= 0 && state.packets[state.selectedIdx] != null;
+          if (!hasSel && !state.editingRule) {
+            ImGui8.TextDisabled("No packet selected.");
+          } else if (state.editingRule) {
+            ImGui8.Spacing();
             const actionGap = 6;
-            const actionW = Math.floor((ImGui.GetContentRegionAvail().x - actionGap) / 2);
-            if (ImGui.Button('Export##rule', new ImVec2(actionW, 0))) exportCurrentRule();
-            ImGui.SameLine(0, actionGap);
-            if (ImGui.Button('Copy##rule', new ImVec2(actionW, 0))) copyCurrentRule();
+            const actionW = Math.floor((ImGui8.GetContentRegionAvail().x - actionGap) / 2);
+            if (ImGui8.Button("Export##rule", new ImVec26(actionW, 0))) exportCurrentRule();
+            ImGui8.SameLine(0, actionGap);
+            if (ImGui8.Button("Copy##rule", new ImVec26(actionW, 0))) copyCurrentRule();
           } else if (hasSel) {
-            const pkt = packets[selectedIdx];
-
-            ImGui.Spacing();
+            const pkt = state.packets[state.selectedIdx];
+            ImGui8.Spacing();
             const actionGap = 6;
-            const actionW = Math.floor((ImGui.GetContentRegionAvail().x - actionGap) / 2);
-            if (ImGui.Button('Export', new ImVec2(actionW, 0))) exportCurrentPacket();
-            ImGui.SameLine(0, actionGap);
-            if (ImGui.Button('Copy', new ImVec2(actionW, 0))) copyCurrentPacket();
-
-            ImGui.Spacing();
+            const actionW = Math.floor((ImGui8.GetContentRegionAvail().x - actionGap) / 2);
+            if (ImGui8.Button("Export", new ImVec26(actionW, 0))) exportCurrentPacket();
+            ImGui8.SameLine(0, actionGap);
+            if (ImGui8.Button("Copy", new ImVec26(actionW, 0))) copyCurrentPacket();
+            ImGui8.Spacing();
             const excludeFuture = [!!getSelectedExcludedRule()];
-            if (ImGui.Checkbox('Must ignore', excludeFuture)) {
-              pendingExcludedRule = { cmd: pkt.cmd, isInbound: pkt.isInbound, enabled: excludeFuture[0] };
+            if (ImGui8.Checkbox("Must ignore", excludeFuture)) {
+              state.pendingExcludedRule = {
+                cmd: pkt.cmd,
+                isInbound: pkt.isInbound,
+                enabled: excludeFuture[0]
+              };
             }
           }
-          ImGui.EndTabItem();
+          ImGui8.EndTabItem();
         }
       } finally {
-        ImGui.EndTabBar();
+        ImGui8.EndTabBar();
       }
     }
   } finally {
-    ImGui.EndChild();
+    ImGui8.EndChild();
   }
 }
 
-// ─── Spoof Rules section (bottom of center panel) ─────────────────────────────
-function renderSpoofRulesSection() {
-  const actionGap = 6;
-  const spoofingWasEnabled = spoofingEnabled;
-  ImGui.Dummy(new ImVec2(0, 4));
-  if (spoofingWasEnabled) {
-    ImGui.PushStyleColor(IMGUI_COL_BUTTON, col32(0.80, 0.24, 0.24, 1.0));
-    ImGui.PushStyleColor(IMGUI_COL_BUTTON_HOVERED, col32(0.92, 0.30, 0.30, 1.0));
-    ImGui.PushStyleColor(IMGUI_COL_BUTTON_ACTIVE, col32(0.68, 0.18, 0.18, 1.0));
-  }
-  if (ImGui.Button(spoofingEnabled ? 'Stop testing' : 'Start testing')) {
-    pendingSpoofingEnabled = !spoofingEnabled;
-    spoofingEnabled = !spoofingEnabled;
-  }
-  if (spoofingWasEnabled) ImGui.PopStyleColor(3);
-  ImGui.SameLine(0, actionGap);
-  if (ImGui.Button('Clear rules')) showClearRulesConfirm = true;
-  ImGui.Dummy(new ImVec2(0, 4));
-
-  ImGui.Spacing();
-  // Header row
-  ImGui.TextDisabled(`Test Rules (${spoofRules.length})`);
-
-  if (spoofRules.length === 0) {
-    ImGui.TextDisabled('  No active rules.');
-  } else {
-    const flags = TF_Borders | TF_RowBg | TF_SizingFixedFit | TF_ScrollY;
-    if (!ImGui.BeginTable('##sr', 4, flags, new ImVec2(0, -1))) return;
-    try {
-      ImGui.TableSetupScrollFreeze(0, 1);
-      ImGui.TableSetupColumn('Dir',     CF_WidthFixed,    28);
-      ImGui.TableSetupColumn('ID',      CF_WidthFixed,    56);
-      ImGui.TableSetupColumn('Name',    CF_WidthStretch,   0);
-      ImGui.TableSetupColumn('Actions', CF_WidthFixed,   112);
-      ImGui.TableHeadersRow();
-
-      for (const rule of spoofRules) {
-        const k = `${rule.isInbound ? 1 : 0}_${rule.cmd}`;
-        const rowHeight = 30;
-        const textOffsetY = Math.max(0, Math.floor((rowHeight - ImGui.GetTextLineHeight()) * 0.5) - 1);
-        const btnOffsetY  = Math.max(0, Math.floor((rowHeight - 24) * 0.5));
-
-        ImGui.PushStyleColor(0, rule.isInbound ? COL_GREEN : COL_PURPLE);
-        ImGui.TableNextRow(0, rowHeight);
-
-        ImGui.TableSetColumnIndex(0);
-        ImGui.SetCursorPosY(ImGui.GetCursorPosY() + textOffsetY);
-        ImGui.Text(rule.isInbound ? 'IN' : 'OUT');
-        ImGui.PopStyleColor(1);
-
-        ImGui.TableSetColumnIndex(1);
-        ImGui.SetCursorPosY(ImGui.GetCursorPosY() + textOffsetY);
-        ImGui.Text(cmdHex(rule.cmd));
-
-        ImGui.TableSetColumnIndex(2);
-        ImGui.SetCursorPosY(ImGui.GetCursorPosY() + textOffsetY);
-        ImGui.Text(CMD_NAMES[rule.cmd] || '');
-
-        ImGui.TableSetColumnIndex(3);
-        ImGui.SetCursorPosY(ImGui.GetCursorPosY() + btnOffsetY);
-        if (ImGui.Button(`Edit##${k}`)) startEditingRule(rule);
-        ImGui.SameLine(0, 4);
-        if (ImGui.Button(`Delete##${k}`))
-          pendingDeleteConfirmRule = { cmd: rule.cmd, isInbound: rule.isInbound };
-      }
-    } finally {
-      ImGui.EndTable();
-    }
-  }
-
-}
-
-// ─── LEFT panel — Packet list ─────────────────────────────────────────────────
-function renderPacketList() {
-  if (!ImGui.BeginTabBar('##lp_tabs')) return;
-  try {
-    if (!ImGui.BeginTabItem(`Packets (${packets.length})##lp_tab`)) return;
-    try {
-      // The table owns its own scroll region (TF_ScrollY). A BeginChild wrapper
-      // is intentionally omitted: nesting two scroll regions caused the visible
-      // area to jump by one frame whenever new packets were appended, producing
-      // a flicker even with auto-scroll disabled.
-      const flags = TF_ScrollY | TF_Borders | TF_RowBg | TF_SizingFixedFit;
-      if (ImGui.BeginTable('##pl', 3, flags, new ImVec2(0, -1))) {
-        try {
-          ImGui.TableSetupScrollFreeze(0, 1);
-          ImGui.TableSetupColumn('Dir',  CF_WidthFixed,   36);
-          ImGui.TableSetupColumn('ID',   CF_WidthFixed,   54);
-          ImGui.TableSetupColumn('Name', CF_WidthStretch,  0);
-          ImGui.TableHeadersRow();
-
-          for (let i = 0; i < packets.length; i++) {
-            const pkt = packets[i];
-            ImGui.PushStyleColor(0, pkt.isInbound ? COL_GREEN : COL_PURPLE);
-            ImGui.TableNextRow();
-            ImGui.TableSetColumnIndex(0);
-            if (ImGui.Selectable(
-              `${pkt.isInbound ? 'IN' : 'OUT'}##r${i}`,
-              selectedIdx === i,
-              SEL_SpanAllColumns
-            )) requestPacketSelection(i);
-            ImGui.TableSetColumnIndex(1); ImGui.Text(cmdHex(pkt.cmd));
-            ImGui.TableSetColumnIndex(2); ImGui.Text(CMD_NAMES[pkt.cmd] || '');
-            ImGui.PopStyleColor(1);
-          }
-
-          if (autoScroll) ImGui.SetScrollHereY(1.0);
-        } finally {
-          ImGui.EndTable();
-        }
-      }
-    } finally {
-      ImGui.EndTabItem();
-    }
-  } finally {
-    ImGui.EndTabBar();
-  }
-}
-
-// ─── CENTER panel ─────────────────────────────────────────────────────────────
-//
-//  ┌─ header ──────────────────────────────────────────────────────┐
-//  │ Offset | 00 01 02 03 04 05 06 07  08 ... 0F | Decoded text   │
-//  │ hex table (scrollable, each byte = Selectable for cursor)     │
-//  ├───────────────────────────────────────────────────────────────┤
-//  │ Spoof Rules (fixed-height section at bottom)                  │
-//  └───────────────────────────────────────────────────────────────┘
-
-const SPOOF_SECTION_H = 180; // px reserved at bottom for the spoof rules section
-
-function renderCenterPanel() {
-  const hasSel = selectedIdx >= 0 && packets[selectedIdx] != null;
-
-  // ── Top area: hex view or placeholder — always leaves SPOOF_SECTION_H at bottom ──
-  ImGui.BeginChild('##cptop', new ImVec2(0, -(SPOOF_SECTION_H + 6)), 0, 0);
-  try {
-    if (editingRule) {
-      ImGui.PushStyleColor(IMGUI_COL_TEXT, COL_ORANGE);
-      ImGui.Text('Rule');
-      ImGui.PopStyleColor(1);
-      ImGui.SameLine(0, 8);
-      ImGui.Text(cmdHex(editingRule.cmd));
-      if (CMD_NAMES[editingRule.cmd]) { ImGui.SameLine(0, 8); ImGui.Text(CMD_NAMES[editingRule.cmd]); }
-      ImGui.Separator();
-      renderHexTable(detail.compact, -1);
-      handleHexCursorKeys(detail.compact);
-    } else if (!hasSel) {
-      ImGui.Spacing();
-      ImGui.TextDisabled('  No packet selected.');
-      ImGui.TextDisabled('  Click a row in the packet list on the left.');
-    } else {
-      const pkt = packets[selectedIdx];
-
-      // Sync detail when selection changes
-      if (detail.lastIdx !== selectedIdx) {
-        loadSelectedDetailFromPacket();
-      }
-
-      ImGui.PushStyleColor(IMGUI_COL_TEXT, pkt.isInbound ? COL_GREEN : COL_PURPLE);
-      ImGui.Text(pkt.isInbound ? 'IN' : 'OUT');
-      ImGui.PopStyleColor(1);
-      ImGui.SameLine(0, 8);
-      ImGui.Text(cmdHex(pkt.cmd));
-      if (CMD_NAMES[pkt.cmd]) { ImGui.SameLine(0, 8); ImGui.Text(CMD_NAMES[pkt.cmd]); }
-      ImGui.SameLine(0, 12);
-      ImGui.TextDisabled(`${pkt.payloadLen} bytes`);
-      ImGui.Separator();
-
-      renderHexTable(detail.compact, -1);
-      handleHexCursorKeys(detail.compact);
-    }
-  } finally {
-    ImGui.EndChild();
-  }
-
-  if (spoofRules.length === 0) ImGui.Separator();
-
-  // ── Spoof rules: fixed height, always visible ─────────────────────────────
-  ImGui.BeginChild('##ss', new ImVec2(0, SPOOF_SECTION_H), 0, 0);
-  try {
-    renderSpoofRulesSection();
-  } finally {
-    ImGui.EndChild();
-  }
-}
-
-function renderSearchWindow(vpW, vpH) {
-  if (!searchState.open) return;
+// src/ui/components/searchWindow.ts
+import { ImGui as ImGui9, ImVec2 as ImVec27 } from "/jsimgui/mod.js";
+function renderSearchWindow(vpW, _vpH) {
+  if (!state.searchState.open) return;
   const winW = 284;
   const winH = 96;
-  ImGui.SetNextWindowPos(new ImVec2(vpW - winW - 8, 28), 4);
-  ImGui.SetNextWindowSize(new ImVec2(winW, winH), 4);
-  const _swOpen = [true];
-  ImGui.Begin('Search value', _swOpen, WF_NoResize);
-  if (!_swOpen[0]) searchState.open = false;
-
+  ImGui9.SetNextWindowPos(new ImVec27(vpW - winW - 8, 28), 4);
+  ImGui9.SetNextWindowSize(new ImVec27(winW, winH), 4);
+  const swOpen = [true];
+  ImGui9.Begin("Search value", swOpen, WF_NoResize);
+  if (!swOpen[0]) state.searchState.open = false;
   try {
-    // ── Row 1: search input (fills row) + Find ─────────────────────────────
-    ImGui.SetNextItemWidth(-(50));
-    const valueRef = [searchState.value];
-    if (ImGui.InputText('##search_value', valueRef, 256)) searchState.value = valueRef[0];
-    ImGui.SameLine(0, 4);
-    if (ImGui.Button('Find##sf')) runSearch();
-
-    // ── Row 2: Datatype + Direction + Previous + Next ──────────────────────
-    const _gap = 4;
-    ImGui.SetNextItemWidth(76);
-    if (ImGui.BeginCombo('##search_type_combo', searchState.type)) {
+    ImGui9.SetNextItemWidth(-50);
+    const valueRef = [state.searchState.value];
+    if (ImGui9.InputText("##search_value", valueRef, 256)) state.searchState.value = valueRef[0];
+    ImGui9.SameLine(0, 4);
+    if (ImGui9.Button("Find##sf")) runSearch();
+    const gap = 4;
+    ImGui9.SetNextItemWidth(76);
+    if (ImGui9.BeginCombo("##search_type_combo", state.searchState.type)) {
       try {
         for (const type of SEARCH_TYPES) {
-          if (ImGui.Selectable(`${type}##search_window_type_${type}`, searchState.type === type))
-            searchState.type = type;
+          if (ImGui9.Selectable(`${type}##search_window_type_${type}`, state.searchState.type === type))
+            state.searchState.type = type;
         }
       } finally {
-        ImGui.EndCombo();
+        ImGui9.EndCombo();
       }
     }
-    ImGui.SameLine(0, _gap);
-    const SEARCH_DIRECTIONS = ['in/out', 'in', 'out'];
-    const _dirLabel = searchState.direction === 'both' ? 'in/out' : searchState.direction;
-    ImGui.SetNextItemWidth(76);
-    if (ImGui.BeginCombo('##search_direction_combo', _dirLabel)) {
+    ImGui9.SameLine(0, gap);
+    const SEARCH_DIRECTIONS = ["in/out", "in", "out"];
+    const dirLabel = state.searchState.direction === "both" ? "in/out" : state.searchState.direction;
+    ImGui9.SetNextItemWidth(76);
+    if (ImGui9.BeginCombo("##search_direction_combo", dirLabel)) {
       try {
         for (const d of SEARCH_DIRECTIONS) {
-          const val = d === 'in/out' ? 'both' : d;
-          if (ImGui.Selectable(`${d}##search_window_direction_${d}`, searchState.direction === val))
-            searchState.direction = val;
+          const val = d === "in/out" ? "both" : d;
+          if (ImGui9.Selectable(`${d}##search_window_direction_${d}`, state.searchState.direction === val))
+            state.searchState.direction = val;
         }
       } finally {
-        ImGui.EndCombo();
+        ImGui9.EndCombo();
       }
     }
-    ImGui.SameLine(0, _gap);
-    ImGui.BeginDisabled(searchState.results.length === 0);
-    if (ImGui.Button('Previous')) searchMove(-1);
-    ImGui.SameLine(0, _gap);
-    if (ImGui.Button('Next')) searchMove(1);
-    ImGui.EndDisabled();
-
-    // ── Row 3: result count ─────────────────────────────────────────────────
-    const resultText = searchState.results.length === 0
-      ? 'No results'
-      : `${searchState.index + 1} / ${searchState.results.length}`;
-    ImGui.TextDisabled(resultText);
-
+    ImGui9.SameLine(0, gap);
+    ImGui9.BeginDisabled(state.searchState.results.length === 0);
+    if (ImGui9.Button("Previous")) searchMove(-1);
+    ImGui9.SameLine(0, gap);
+    if (ImGui9.Button("Next")) searchMove(1);
+    ImGui9.EndDisabled();
+    const resultText = state.searchState.results.length === 0 ? "No results" : `${state.searchState.index + 1} / ${state.searchState.results.length}`;
+    ImGui9.TextDisabled(resultText);
   } finally {
-    ImGui.End();
+    ImGui9.End();
   }
 }
 
-// ─── Clear all rules confirmation modal ──────────────────────────────────────
+// src/ui/components/modals.ts
+import { ImGui as ImGui10, ImVec2 as ImVec28 } from "/jsimgui/mod.js";
 function renderClearRulesConfirmModal(vpW, vpH) {
-  if (!showClearRulesConfirm) return;
-  ImGui.SetNextWindowPos(new ImVec2(Math.floor((vpW - 320) * 0.5), Math.floor((vpH - 90) * 0.5)), 4);
-  ImGui.SetNextWindowSize(new ImVec2(320, 90), 4);
-  ImGui.Begin('Clear Test Rules', null, WF_NoResize);
+  if (!state.showClearRulesConfirm) return;
+  ImGui10.SetNextWindowPos(
+    new ImVec28(Math.floor((vpW - 320) * 0.5), Math.floor((vpH - 90) * 0.5)),
+    4
+  );
+  ImGui10.SetNextWindowSize(new ImVec28(320, 90), 4);
+  ImGui10.Begin("Clear Test Rules", null, WF_NoResize);
   try {
-    ImGui.TextWrapped(`Clear all ${spoofRules.length} test rule${spoofRules.length !== 1 ? 's' : ''}? This cannot be undone.`);
-    if (ImGui.Button('Clear all')) { pendingClearRules = true; showClearRulesConfirm = false; }
-    ImGui.SameLine(0, 8);
-    if (ImGui.Button('Cancel')) showClearRulesConfirm = false;
+    ImGui10.TextWrapped(
+      `Clear all ${state.spoofRules.length} test rule${state.spoofRules.length !== 1 ? "s" : ""}? This cannot be undone.`
+    );
+    if (ImGui10.Button("Clear all")) {
+      state.pendingClearRules = true;
+      state.showClearRulesConfirm = false;
+    }
+    ImGui10.SameLine(0, 8);
+    if (ImGui10.Button("Cancel")) state.showClearRulesConfirm = false;
   } finally {
-    ImGui.End();
+    ImGui10.End();
   }
 }
-
-// ─── Delete rule confirmation modal ──────────────────────────────────────────
 function renderDeleteRuleConfirmModal(vpW, vpH) {
-  if (!pendingDeleteConfirmRule) return;
-  ImGui.SetNextWindowPos(new ImVec2(Math.floor((vpW - 360) * 0.5), Math.floor((vpH - 90) * 0.5)), 4);
-  ImGui.SetNextWindowSize(new ImVec2(360, 90), 4);
-  ImGui.Begin('Delete Test Rule', null, WF_NoResize);
+  if (!state.pendingDeleteConfirmRule) return;
+  ImGui10.SetNextWindowPos(
+    new ImVec28(Math.floor((vpW - 360) * 0.5), Math.floor((vpH - 90) * 0.5)),
+    4
+  );
+  ImGui10.SetNextWindowSize(new ImVec28(360, 90), 4);
+  ImGui10.Begin("Delete Test Rule", null, WF_NoResize);
   try {
-    const r = pendingDeleteConfirmRule;
-    const _rName = CMD_NAMES[r.cmd] ? ` ${CMD_NAMES[r.cmd]}` : '';
-    ImGui.TextWrapped(`Delete test rule for ${cmdHex(r.cmd)}${_rName} (${r.isInbound ? 'IN' : 'OUT'})?`);
-    if (ImGui.Button('Delete')) {
-      pendingDelete = { cmd: r.cmd, isInbound: r.isInbound };
-      if (editingRule && editingRule.cmd === r.cmd && editingRule.isInbound === r.isInbound) {
-        editingRule = null; detail.lastIdx = -2;
+    const r = state.pendingDeleteConfirmRule;
+    const rName = state.spoofRules.find((sr) => sr.cmd === r.cmd)?.cmd ? ` ${r["name"] ?? ""}` : "";
+    ImGui10.TextWrapped(`Delete test rule for 0x${r.cmd.toString(16).toUpperCase().padStart(4, "0")} (${r.isInbound ? "IN" : "OUT"})?`);
+    if (ImGui10.Button("Delete")) {
+      state.pendingDelete = { cmd: r.cmd, isInbound: r.isInbound };
+      if (state.editingRule && state.editingRule.cmd === r.cmd && state.editingRule.isInbound === r.isInbound) {
+        state.editingRule = null;
+        state.detail.lastIdx = -2;
       }
-      pendingDeleteConfirmRule = null;
+      state.pendingDeleteConfirmRule = null;
     }
-    ImGui.SameLine(0, 8);
-    if (ImGui.Button('Cancel')) pendingDeleteConfirmRule = null;
+    ImGui10.SameLine(0, 8);
+    if (ImGui10.Button("Cancel")) state.pendingDeleteConfirmRule = null;
   } finally {
-    ImGui.End();
+    ImGui10.End();
   }
 }
-
-// ─── Disable keep upstream confirmation modal ─────────────────────────────────
 function renderDisableKeepUpstreamConfirmModal(vpW, vpH) {
-  if (!showDisableKeepUpstreamConfirm) return;
-  ImGui.SetNextWindowPos(new ImVec2(Math.floor((vpW - 340) * 0.5), Math.floor((vpH - 90) * 0.5)), 4);
-  ImGui.SetNextWindowSize(new ImVec2(340, 90), 4);
-  ImGui.Begin('Close upstream connections', null, WF_NoResize);
+  if (!state.showDisableKeepUpstreamConfirm) return;
+  ImGui10.SetNextWindowPos(
+    new ImVec28(Math.floor((vpW - 340) * 0.5), Math.floor((vpH - 90) * 0.5)),
+    4
+  );
+  ImGui10.SetNextWindowSize(new ImVec28(340, 90), 4);
+  ImGui10.Begin("Close upstream connections", null, WF_NoResize);
   try {
-    ImGui.TextWrapped('Active upstream connections will be closed. Continue?');
-    if (ImGui.Button('Close connections')) {
-      keepUpstreamOpen = false;
-      pendingKeepUpstreamOpen = false;
-      pendingForceCloseUpstream = true;
-      showDisableKeepUpstreamConfirm = false;
+    ImGui10.TextWrapped("Active upstream connections will be closed. Continue?");
+    if (ImGui10.Button("Close connections")) {
+      state.keepUpstreamOpen = false;
+      state.pendingKeepUpstreamOpen = false;
+      state.pendingForceCloseUpstream = true;
+      state.showDisableKeepUpstreamConfirm = false;
     }
-    ImGui.SameLine(0, 8);
-    if (ImGui.Button('Cancel')) showDisableKeepUpstreamConfirm = false;
+    ImGui10.SameLine(0, 8);
+    if (ImGui10.Button("Cancel")) state.showDisableKeepUpstreamConfirm = false;
   } finally {
-    ImGui.End();
+    ImGui10.End();
   }
 }
-
-// ─── Connection State modal ───────────────────────────────────────────────────
 function renderConnectionStateModal(vpW, vpH) {
-  if (!showConnectionStateModal) return;
-  ImGui.SetNextWindowPos(new ImVec2(Math.floor((vpW - 210) * 0.5), Math.floor((vpH - 68) * 0.5)), 4);
-  ImGui.SetNextWindowSize(new ImVec2(210, 68), 4);
-  const openRef = [showConnectionStateModal];
-  ImGui.Begin('Connection State', openRef, WF_NoResize);
-  showConnectionStateModal = openRef[0];
+  if (!state.showConnectionStateModal) return;
+  ImGui10.SetNextWindowPos(
+    new ImVec28(Math.floor((vpW - 210) * 0.5), Math.floor((vpH - 68) * 0.5)),
+    4
+  );
+  ImGui10.SetNextWindowSize(new ImVec28(210, 68), 4);
+  const openRef = [state.showConnectionStateModal];
+  ImGui10.Begin("Connection State", openRef, WF_NoResize);
+  state.showConnectionStateModal = openRef[0];
   try {
-    const activePorts = tcpStatuses.filter(s => s.connected).map(s => String(s.port));
-    ImGui.TextDisabled('Upstream');
-    ImGui.SameLine(0, 8);
-    ImGui.PushStyleColor(0, activePorts.length ? COL_GREEN : COL_RED);
-    ImGui.Text(activePorts.length ? activePorts.join(', ') : 'None');
-    ImGui.PopStyleColor(1);
-    ImGui.TextDisabled('WebSocket');
-    ImGui.SameLine(0, 8);
-    ImGui.PushStyleColor(0, wsReady ? COL_GREEN : COL_RED);
-    ImGui.Text(wsReady ? 'connected' : 'disconnected');
-    ImGui.PopStyleColor(1);
+    const activePorts = state.tcpStatuses.filter((s) => s.connected).map((s) => String(s.port));
+    ImGui10.TextDisabled("Upstream");
+    ImGui10.SameLine(0, 8);
+    ImGui10.PushStyleColor(0, activePorts.length ? COL_GREEN : COL_RED);
+    ImGui10.Text(activePorts.length ? activePorts.join(", ") : "None");
+    ImGui10.PopStyleColor(1);
+    ImGui10.TextDisabled("WebSocket");
+    ImGui10.SameLine(0, 8);
+    ImGui10.PushStyleColor(0, state.wsReady ? COL_GREEN : COL_RED);
+    ImGui10.Text(state.wsReady ? "connected" : "disconnected");
+    ImGui10.PopStyleColor(1);
   } finally {
-    ImGui.End();
+    ImGui10.End();
   }
 }
 
-// ─── Main window ──────────────────────────────────────────────────────────────
+// src/ui/components/mainWindow.ts
 function renderMainWindow(vpW, vpH) {
-  ImGui.SetNextWindowPos(new ImVec2(0, 0));
-  ImGui.SetNextWindowSize(new ImVec2(vpW, vpH));
-  ImGui.Begin('##main', null,
-    WF_NoMove | WF_NoResize | WF_NoCollapse | WF_NoTitleBar | WF_MenuBar);
-
+  if (state.spoofingEnabled) {
+    ImGui11.PushStyleColor(IMGUI_COL_MENUBAR_BG, COL_TESTING_BG);
+  }
+  ImGui11.SetNextWindowPos(new ImVec29(0, 0));
+  ImGui11.SetNextWindowSize(new ImVec29(vpW, vpH));
+  ImGui11.Begin(
+    "##main",
+    null,
+    WF_NoMove | WF_NoResize | WF_NoCollapse | WF_NoTitleBar | WF_MenuBar
+  );
+  if (state.spoofingEnabled) ImGui11.PopStyleColor(1);
   try {
-    // ── Menu bar ───────────────────────────────────────────────────────────
-    if (ImGui.BeginMenuBar()) {
+    if (ImGui11.BeginMenuBar()) {
       try {
-        ImGui.Text('MGO2 SCANNER');
-        ImGui.SameLine(0, 20);
-
-        if (ImGui.BeginMenu('View')) {
-          if (ImGui.MenuItem('Auto-scroll', '', autoScroll)) autoScroll = !autoScroll;
-          if (ImGui.MenuItem('Keep upstream open', '', keepUpstreamOpen)) {
-            if (keepUpstreamOpen && tcpStatuses.some(s => s.connected)) {
-              showDisableKeepUpstreamConfirm = true;
+        ImGui11.Text("MGO2 SCANNER");
+        if (state.spoofingEnabled) {
+          ImGui11.SameLine(0, 12);
+          ImGui11.Text("[TESTING]");
+        }
+        ImGui11.SameLine(0, 20);
+        if (ImGui11.BeginMenu("View")) {
+          if (ImGui11.MenuItem("Auto-scroll", "", state.autoScroll)) state.autoScroll = !state.autoScroll;
+          if (ImGui11.MenuItem("Keep upstream open", "", state.keepUpstreamOpen)) {
+            if (state.keepUpstreamOpen && state.tcpStatuses.some((s) => s.connected)) {
+              state.showDisableKeepUpstreamConfirm = true;
             } else {
-              keepUpstreamOpen = !keepUpstreamOpen;
-              pendingKeepUpstreamOpen = keepUpstreamOpen;
+              state.keepUpstreamOpen = !state.keepUpstreamOpen;
+              state.pendingKeepUpstreamOpen = state.keepUpstreamOpen;
             }
           }
-          ImGui.Separator();
-          if (ImGui.MenuItem('Connection State')) showConnectionStateModal = true;
-          ImGui.EndMenu();
+          ImGui11.Separator();
+          if (ImGui11.MenuItem("Connection State")) state.showConnectionStateModal = true;
+          ImGui11.EndMenu();
         }
-
-        if (ImGui.BeginMenu('Edit')) {
-          if (ImGui.MenuItem('Clear Packets')) {
-            packets.length = 0; selectedIdx = -1;
-            detail.compact = ''; detail.original = ''; detail.packet = ''; detail.lastIdx = -2; detail.cursorByte = 0;
+        if (ImGui11.BeginMenu("Edit")) {
+          if (ImGui11.MenuItem("Clear Packets")) {
+            state.packets.length = 0;
+            state.selectedIdx = -1;
+            state.detail.compact = "";
+            state.detail.original = "";
+            state.detail.packet = "";
+            state.detail.lastIdx = -2;
+            state.detail.cursorByte = 0;
           }
-          if (ImGui.MenuItem('Clear Test Rules')) showClearRulesConfirm = true;
-          ImGui.Separator();
-          if (ImGui.MenuItem('Search value')) searchState.open = true;
-          ImGui.EndMenu();
+          if (ImGui11.MenuItem("Clear Test Rules")) state.showClearRulesConfirm = true;
+          ImGui11.Separator();
+          if (ImGui11.MenuItem("Search value")) state.searchState.open = true;
+          ImGui11.EndMenu();
         }
-
-        ImGui.BeginDisabled(packets.length === 0);
-        if (ImGui.SmallButton('Export')) exportAllPackets();
-        ImGui.EndDisabled();
-
+        if (ImGui11.BeginMenu("Export")) {
+          const hasSel = state.selectedIdx >= 0 && state.packets[state.selectedIdx] != null;
+          ImGui11.BeginDisabled(!hasSel);
+          if (ImGui11.MenuItem("Export Selected")) exportCurrentPacket();
+          ImGui11.EndDisabled();
+          ImGui11.BeginDisabled(state.packets.length === 0);
+          if (ImGui11.MenuItem("Export All")) exportAllPackets();
+          ImGui11.EndDisabled();
+          ImGui11.EndMenu();
+        }
       } finally {
-        ImGui.EndMenuBar();
+        ImGui11.EndMenuBar();
       }
     }
-    // ── Panel layout ───────────────────────────────────────────────────────
     const lpW = 300;
     const rpW = 240;
     const cpW = vpW - lpW - rpW - 16;
-
-    ImGui.BeginChild('##lp', new ImVec2(lpW, 0), 1, 0);
-    try { renderPacketList(); } finally { ImGui.EndChild(); }
-
-    ImGui.SameLine(0, 4);
-
-    ImGui.BeginChild('##cp', new ImVec2(cpW, 0), 1, 0);
-    try { renderCenterPanel(); } finally { ImGui.EndChild(); }
-
-    ImGui.SameLine(0, 4);
-
-    ImGui.BeginChild('##rp', new ImVec2(0, 0), 1, 0);
-    try { renderRightSidebar(vpH); } finally { ImGui.EndChild(); }
-
+    ImGui11.BeginChild("##lp", new ImVec29(lpW, 0), 1, 0);
+    try {
+      renderPacketList();
+    } finally {
+      ImGui11.EndChild();
+    }
+    ImGui11.SameLine(0, 4);
+    ImGui11.BeginChild("##cp", new ImVec29(cpW, 0), 1, 0);
+    try {
+      renderCenterPanel();
+    } finally {
+      ImGui11.EndChild();
+    }
+    ImGui11.SameLine(0, 4);
+    ImGui11.BeginChild("##rp", new ImVec29(0, 0), 1, 0);
+    try {
+      renderRightSidebar(vpH);
+    } finally {
+      ImGui11.EndChild();
+    }
   } finally {
-    ImGui.End();
+    ImGui11.End();
   }
-
   renderSearchWindow(vpW, vpH);
   renderClearRulesConfirmModal(vpW, vpH);
   renderDeleteRuleConfirmModal(vpW, vpH);
@@ -1595,62 +1432,63 @@ function renderMainWindow(vpW, vpH) {
   renderConnectionStateModal(vpW, vpH);
 }
 
-// ─── Main render loop ─────────────────────────────────────────────────────────
-let _canvas = null;
-
+// src/ui/main.ts
+var _canvas = null;
 function frame() {
-  _canvas.width  = _canvas.clientWidth;
-  _canvas.height = _canvas.clientHeight;
-  const vpW = _canvas.clientWidth;
-  const vpH = _canvas.clientHeight;
-
+  const canvas = _canvas;
+  canvas.width = canvas.clientWidth;
+  canvas.height = canvas.clientHeight;
+  const vpW = canvas.clientWidth;
+  const vpH = canvas.clientHeight;
+  document.title = state.spoofingEnabled ? "MGO2 Scanner [TESTING]" : "MGO2 Scanner";
   ImGuiImplWeb.BeginRender();
   try {
     renderMainWindow(vpW, vpH);
   } finally {
     ImGuiImplWeb.EndRender();
   }
-
-  if (pendingDelete) { sendWS({ type: 'deleteSpoofRule', ...pendingDelete }); pendingDelete = null; }
-  if (pendingSave)   { sendWS({ type: 'setSpoofRule',    ...pendingSave });   pendingSave   = null; }
-  if (pendingSpoofingEnabled !== null) {
-    sendWS({ type: 'setSpoofingEnabled', enabled: pendingSpoofingEnabled });
-    pendingSpoofingEnabled = null;
+  if (state.pendingDelete) {
+    sendWS({ type: "deleteSpoofRule", ...state.pendingDelete });
+    state.pendingDelete = null;
   }
-  if (pendingKeepUpstreamOpen !== null) {
-    sendWS({ type: 'setKeepUpstreamOpen', enabled: pendingKeepUpstreamOpen });
-    pendingKeepUpstreamOpen = null;
+  if (state.pendingSave) {
+    sendWS({ type: "setSpoofRule", ...state.pendingSave });
+    state.pendingSave = null;
   }
-  if (pendingForceCloseUpstream) {
-    sendWS({ type: 'closeUpstreamConnections' });
-    pendingForceCloseUpstream = false;
+  if (state.pendingSpoofingEnabled !== null) {
+    sendWS({ type: "setSpoofingEnabled", enabled: state.pendingSpoofingEnabled });
+    state.pendingSpoofingEnabled = null;
   }
-  if (pendingExcludedRule) {
-    sendWS({ type: 'setExcludedRule', ...pendingExcludedRule });
-    pendingExcludedRule = null;
+  if (state.pendingKeepUpstreamOpen !== null) {
+    sendWS({ type: "setKeepUpstreamOpen", enabled: state.pendingKeepUpstreamOpen });
+    state.pendingKeepUpstreamOpen = null;
   }
-  if (pendingClearRules) {
-    for (const r of [...spoofRules]) {
-      sendWS({ type: 'deleteSpoofRule', cmd: r.cmd, isInbound: r.isInbound });
+  if (state.pendingForceCloseUpstream) {
+    sendWS({ type: "closeUpstreamConnections" });
+    state.pendingForceCloseUpstream = false;
+  }
+  if (state.pendingExcludedRule) {
+    sendWS({ type: "setExcludedRule", ...state.pendingExcludedRule });
+    state.pendingExcludedRule = null;
+  }
+  if (state.pendingClearRules) {
+    for (const r of [...state.spoofRules]) {
+      sendWS({ type: "deleteSpoofRule", cmd: r.cmd, isInbound: r.isInbound });
     }
-    pendingClearRules = false;
+    state.pendingClearRules = false;
   }
-
   requestAnimationFrame(frame);
 }
-
-// ─── Init ─────────────────────────────────────────────────────────────────────
 async function init() {
-  const canvas = document.getElementById('canvas');
+  const canvas = document.getElementById("canvas");
   _canvas = canvas;
-  await ImGuiImplWeb.Init({ canvas, backend: 'webgl2', loaderPath: './jsimgui.em.js' });
-  ImGui.StyleColorsDark();
+  await ImGuiImplWeb.Init({ canvas, backend: "webgl2", loaderPath: "./jsimgui.em.js" });
+  ImGui12.StyleColorsDark();
   connectWS();
-  setStatus('ready');
+  setStatus("ready");
   requestAnimationFrame(frame);
 }
-
-init().catch(err => {
-  console.error('ImGui init failed:', err);
-  setStatus('ERROR: ' + err.message);
+init().catch((err) => {
+  console.error("ImGui init failed:", err);
+  setStatus("ERROR: " + err.message);
 });

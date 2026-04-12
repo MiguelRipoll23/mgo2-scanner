@@ -32,11 +32,7 @@ Set `DISABLE_DNS=true` to skip the DNS server (e.g. if port 53 is already in use
 ```bash
 docker run -d \
   --name mgo2-scanner \
-  -p 53:53/udp \
-  -p 80:80 \
-  -p 5731-5734:5731-5734 \
-  -p 5738-5739:5738-5739 \
-  -p 8080:8080 \
+  --network host \
   -e LISTENING_IP=0.0.0.0 \
   -e DNS_UPSTREAM_IP=8.8.8.8 \
   -e DNS_UPSTREAM_PORT=53 \
